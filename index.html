@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<!--
+  Fishery website – base template
+  --------------------------------
+  Structure:
+    1. <header>  : logo slot + navigation + light/dark toggle
+    2. #page-map : main page, holds the map frame (the main feature)
+    3. #page-about : second "page" – hidden/shown with jQuery so the site stays on one HTML file
+    4. <footer>  : shared across both pages
+  Files: index.html, styles.css, images/ (empty for now)
+-->
+<!-- data-theme="dark" makes dark mode the default. jQuery toggles it to "light". -->
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Fishing activity map</title>
+
+  <!-- Fonts: Libre Caslon Text (headings, chart-engraving feel) + Hanken Grotesk (interface text).
+       Both have fallbacks in styles.css in case the request is blocked. -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600&family=Libre+Caslon+Text:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet">
+
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+  <!-- ============================================================
+       HEADER
+       ============================================================ -->
+  <header class="site-header">
+
+    <!-- Brand slot: replace the placeholder box with an <img> from /images and
+         swap the text once the fishery has a name. -->
+    <a class="brand" href="#" data-page="map" aria-label="Home">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span class="brand-name">Fishery name</span>
+    </a>
+
+    <!-- Navigation: each button's data-page value matches a section id ("page-" + value).
+         jQuery (bottom of file) shows the chosen section and hides the others. -->
+    <nav class="site-nav" aria-label="Main">
+      <button type="button" class="nav-link is-active" data-page="map">Map</button>
+      <button type="button" class="nav-link" data-page="about">About the data</button>
+      <!-- Add more nav buttons here later (and a matching <main id="page-..."> section) -->
+    </nav>
+
+    <!-- Theme toggle: dark is the default, this switches to light and back -->
+    <button type="button" class="theme-toggle" id="theme-toggle" aria-pressed="false">
+      Light mode
+    </button>
+  </header>
+
+
+  <!-- ============================================================
+       PAGE 1 – MAP
+       ============================================================ -->
+  <main id="page-map" class="page">
+
+    <div class="page-intro">
+      <h1>Where the fleet is fishing</h1>
+      <p>Explore apparent fishing activity from Global Fishing Watch. Choose a date range and filters, then pan and zoom the map.</p>
+    </div>
+
+    <!-- The map workspace: filter panel on the left, map frame on the right -->
+    <section class="workspace" aria-label="Fishing activity map">
+
+      <!-- ---------- Filter panel (placeholder controls, not wired up) ----------
+           Collapsible via the button in the map toolbar (jQuery at bottom). -->
+      <aside class="panel" id="filter-panel" aria-label="Map filters">
+        <h2>Filters</h2>
+
+        <div class="field">
+          <label for="date-from">From</label>
+          <input type="date" id="date-from" disabled>
+        </div>
+        <div class="field">
+          <label for="date-to">To</label>
+          <input type="date" id="date-to" disabled>
+        </div>
+        <div class="field">
+          <label for="gear-type">Gear type</label>
+          <select id="gear-type" disabled>
+            <option>All gear types</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="flag-state">Flag state</label>
+          <select id="flag-state" disabled>
+            <option>All flag states</option>
+          </select>
+        </div>
+
+        <button type="button" class="button" disabled>Apply filters</button>
+        <p class="panel-note">Filters will activate once data is connected.</p>
+      </aside>
+
+      <!-- ---------- MAP FRAME ----------
+           >>> THE MAP GOES IN #map <<<
+           Initialise your map library (Leaflet, MapLibre, OpenLayers, etc.) on the
+           element with id="map". Remove the .map-placeholder block when you do.
+           The element is sized by CSS, so the map will fill it automatically. -->
+      <div class="map-frame">
+
+        <!-- Toolbar above the map -->
+        <div class="map-toolbar">
+          <button type="button" class="button button-quiet" id="panel-toggle" aria-expanded="true" aria-controls="filter-panel">
+            Hide filters
+          </button>
+          <span class="map-title">Apparent fishing activity</span>
+        </div>
+
+        <!-- Map container -->
+        <div id="map" class="map-canvas">
+          <!-- Placeholder, delete when the real map is added -->
+          <div class="map-placeholder">
+            <p class="map-placeholder-title">Map goes here</p>
+            <p class="map-placeholder-sub">Mount the map on <code>#map</code></p>
+          </div>
+        </div>
+
+        <!-- Status bar below the map: fill these in with real values from the map later -->
+        <div class="map-status">
+          <span>Latitude <strong id="status-lat">–</strong></span>
+          <span>Longitude <strong id="status-lng">–</strong></span>
+          <span>Zoom <strong id="status-zoom">–</strong></span>
+          <span class="status-right">Data to <strong id="status-date">–</strong></span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Room for extra features/information below the map later (e.g. summary figures, charts) -->
+    <section class="extras" aria-label="Additional information">
+      <p>Space reserved for summary figures, charts or notes beneath the map.</p>
+    </section>
+  </main>
+
+
+  <!-- ============================================================
+       PAGE 2 – ABOUT THE DATA
+       Hidden on load. jQuery reveals it when "About the data" is clicked.
+       ============================================================ -->
+  <main id="page-about" class="page" hidden>
+
+    <div class="page-intro">
+      <h1>About the data</h1>
+      <p>Where the map's information comes from and how to read it.</p>
+    </div>
+
+    <div class="prose">
+      <h2>Source</h2>
+      <p>The map uses data from Global Fishing Watch, which analyses vessel tracking signals to estimate where and when fishing is taking place.</p>
+
+      <h2>Reading the map</h2>
+      <p>Brighter areas show more apparent fishing activity during the selected dates. Activity is estimated from vessel movement, so it shows likely fishing rather than confirmed catches.</p>
+
+      <h2>Limitations</h2>
+      <p>Vessels that do not broadcast a tracking signal, or whose signal is weak or switched off, may be missing or under-represented.</p>
+
+      <!-- Replace this placeholder copy with the fishery's own wording -->
+    </div>
+  </main>
+
+
+  <!-- ============================================================
+       FOOTER (shared by both pages)
+       ============================================================ -->
+  <footer class="site-footer">
+    <p>Data: Global Fishing Watch</p>
+    <p>Fishery name</p>
+  </footer>
+
+
+  <!-- ============================================================
+       JAVASCRIPT (jQuery only)
+       ============================================================ -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.7.1/jquery.min.js"></script>
+  <script>
+    $(function () {
+
+      // ---- 1. Page switching ------------------------------------
+      // Everything lives in this one file. Clicking a nav item hides the
+      // current .page and shows the one that matches data-page.
+      $('[data-page]').on('click', function (e) {
+        e.preventDefault();
+        var target = $(this).data('page');            // "map" or "about"
+
+        $('.page').hide();                            // hide every page
+        $('#page-' + target).show();                  // show the chosen one
+
+        // Update which nav button looks active
+        $('.nav-link').removeClass('is-active').removeAttr('aria-current');
+        $('.nav-link[data-page="' + target + '"]')
+          .addClass('is-active')
+          .attr('aria-current', 'page');
+
+        $(window).scrollTop(0);                       // start at the top of the new page
+      });
+
+      // ---- 2. Collapse / expand the filter panel -----------------
+      // The map gets the full width when the panel is hidden.
+      // NOTE: if the map library caches its size, tell it to resize here
+      // (for example map.invalidateSize() in Leaflet).
+      $('#panel-toggle').on('click', function () {
+        var $workspace = $('.workspace');
+        var hidden = $workspace.toggleClass('panel-hidden').hasClass('panel-hidden');
+
+        $(this)
+          .text(hidden ? 'Show filters' : 'Hide filters')
+          .attr('aria-expanded', !hidden);
+      });
+
+      // ---- 3. Light / dark theme --------------------------------
+      // Dark is set in the HTML (data-theme="dark"). This flips the attribute,
+      // and the CSS variables in styles.css do the rest.
+      $('#theme-toggle').on('click', function () {
+        var $root = $('html');
+        var goingLight = $root.attr('data-theme') === 'dark';
+
+        $root.attr('data-theme', goingLight ? 'light' : 'dark');
+        $(this)
+          .text(goingLight ? 'Dark mode' : 'Light mode')
+          .attr('aria-pressed', goingLight);
+      });
+
+    });
+  </script>
+</body>
+</html>
