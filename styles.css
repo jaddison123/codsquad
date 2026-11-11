@@ -6,7 +6,7 @@
      2. Base / reset
      3. Header & navigation
      4. Page layout & intro
-     5. Map workspace (filter panel, map frame, status bar)
+     5. Map workspace (filter panel, map frame, details card, status bar)
      6. Extras area & About page text
      7. Footer
      8. Buttons & form fields
@@ -255,45 +255,58 @@ p { margin: 0; }
 }
 .map-title { color: var(--text-muted); font-size: .9rem; }
 
+/* The stage holds the map and the details card that floats over it */
+.map-stage { position: relative; }
+
 /* >>> MAP CANVAS <<<
-   This is the element #map. Its height is set here so the map library has a
-   real size to draw into. Adjust the height to taste. */
+   This is the element #map that MapLibre draws into. Adjust the height to taste. */
 .map-canvas {
-  position: relative;
   height: clamp(460px, 68vh, 820px);
   background-color: var(--map-bg);
-
-  /* Faint graticule (lat/long grid) so the empty space already looks like a chart.
-     Remove these two lines once the real map is in place. */
-  background-image:
-    linear-gradient(var(--line-soft) 1px, transparent 1px),
-    linear-gradient(90deg, var(--line-soft) 1px, transparent 1px);
-  background-size: 80px 80px;
 }
 
-/* Placeholder text, centred. Delete with the placeholder HTML later. */
-.map-placeholder {
+/* Details card shown when a grid cell is clicked */
+.cell-detail {
   position: absolute;
-  inset: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: .4rem;
-  text-align: center;
-  pointer-events: none;
-}
-.map-placeholder-title {
-  font-family: var(--font-display);
-  font-style: italic;
-  font-size: 1.6rem;
-}
-.map-placeholder-sub { color: var(--text-muted); font-size: .9rem; }
-.map-placeholder code {
-  padding: .1rem .4rem;
-  background: var(--surface-2);
+  top: .75rem;
+  right: .75rem;
+  z-index: 2;
+  width: min(320px, calc(100% - 1.5rem));
+  max-height: calc(100% - 1.5rem);
+  overflow-y: auto;
+  padding: 1rem;
+  background: var(--surface);
+  border: 1px solid var(--line);
   border-radius: var(--radius);
 }
+.cell-detail-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: .5rem;
+}
+.cell-detail h3 { margin: 0; font-family: var(--font-display); font-weight: 400; font-size: 1.15rem; }
+.cell-detail-meta { font-size: .85rem; color: var(--text-muted); margin-bottom: .75rem; font-variant-numeric: tabular-nums; }
+.cell-detail-state { margin-bottom: .5rem; }
+
+/* One row per vessel: id on the left, hours on the right */
+.vessel-list { list-style: none; margin: 0; padding: 0; }
+.vessel-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: .45rem 0;
+  border-top: 1px solid var(--line-soft);
+  font-size: .9rem;
+}
+.vessel-id { overflow-wrap: anywhere; }
+.vessel-hours { color: var(--text-muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+
+/* MapLibre's own buttons and credits, matched to the theme */
+:root[data-theme="dark"] .maplibregl-ctrl-group { background: var(--surface-2); }
+:root[data-theme="dark"] .maplibregl-ctrl button .maplibregl-ctrl-icon { filter: invert(1); }
+.maplibregl-ctrl-scale { font-family: var(--font-ui); }
 
 /* Status bar: live readouts under the map */
 .map-status {
@@ -307,6 +320,7 @@ p { margin: 0; }
   font-variant-numeric: tabular-nums;   /* numbers don't jiggle as they update */
 }
 .map-status strong { color: var(--text); font-weight: 500; margin-left: .25rem; }
+.status-msg { color: var(--text); }
 .status-right { margin-left: auto; }
 
 

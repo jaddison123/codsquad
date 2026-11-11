@@ -1,13 +1,15 @@
 <!DOCTYPE html>
 <!--
-  Fishery website – base template
+  Fishery website – map version
   --------------------------------
   Structure:
-    1. <header>  : logo slot + navigation + light/dark toggle
-    2. #page-map : main page, holds the map frame (the main feature)
+    1. <header>    : logo slot + navigation + light/dark toggle
+    2. #page-map   : main page, holds the live Global Fishing Watch map
     3. #page-about : second "page" – hidden/shown with jQuery so the site stays on one HTML file
-    4. <footer>  : shared across both pages
-  Files: index.html, styles.css, images/ (empty for now)
+    4. <footer>    : shared across both pages
+
+  Files: index.html, styles.css, server.js (small proxy that keeps the API token secret), images/
+  Run it with:  GFW_TOKEN=your_token node server.js   then open http://localhost:3000
 -->
 <!-- data-theme="dark" makes dark mode the default. jQuery toggles it to "light". -->
 <html lang="en" data-theme="dark">
@@ -16,11 +18,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Fishing activity map</title>
 
-  <!-- Fonts: Libre Caslon Text (headings, chart-engraving feel) + Hanken Grotesk (interface text).
-       Both have fallbacks in styles.css in case the request is blocked. -->
+  <!-- Fonts: Libre Caslon Text (headings) + Hanken Grotesk (interface text) -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600&family=Libre+Caslon+Text:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet">
+
+  <!-- MapLibre GL JS: the map library that draws the Global Fishing Watch vector tiles.
+       (jQuery alone cannot draw a tiled map, so this is the one extra library.) -->
+  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
 
   <link rel="stylesheet" href="styles.css">
 </head>
@@ -38,8 +43,7 @@
       <span class="brand-name">Fishery name</span>
     </a>
 
-    <!-- Navigation: each button's data-page value matches a section id ("page-" + value).
-         jQuery (bottom of file) shows the chosen section and hides the others. -->
+    <!-- Navigation: each button's data-page value matches a section id ("page-" + value). -->
     <nav class="site-nav" aria-label="Main">
       <button type="button" class="nav-link is-active" data-page="map">Map</button>
       <button type="button" class="nav-link" data-page="about">About the data</button>
@@ -60,47 +64,86 @@
 
     <div class="page-intro">
       <h1>Where the fleet is fishing</h1>
-      <p>Explore apparent fishing activity from Global Fishing Watch. Choose a date range and filters, then pan and zoom the map.</p>
+      <p>Explore apparent fishing activity from Global Fishing Watch. Choose dates and filters, then click a grid cell to see the vessels behind it.</p>
     </div>
 
     <!-- The map workspace: filter panel on the left, map frame on the right -->
     <section class="workspace" aria-label="Fishing activity map">
 
-      <!-- ---------- Filter panel (placeholder controls, not wired up) ----------
-           Collapsible via the button in the map toolbar (jQuery at bottom). -->
+      <!-- ---------- Filter panel ----------
+           Values are read by the script at the bottom when "Apply filters" is pressed. -->
       <aside class="panel" id="filter-panel" aria-label="Map filters">
         <h2>Filters</h2>
 
         <div class="field">
           <label for="date-from">From</label>
-          <input type="date" id="date-from" disabled>
+          <input type="date" id="date-from">
         </div>
         <div class="field">
           <label for="date-to">To</label>
-          <input type="date" id="date-to" disabled>
+          <input type="date" id="date-to">
         </div>
+
+        <!-- Gear types: the value must match Global Fishing Watch's geartype names.
+             Check the list against their documentation and add or remove options as needed. -->
         <div class="field">
           <label for="gear-type">Gear type</label>
-          <select id="gear-type" disabled>
-            <option>All gear types</option>
+          <select id="gear-type">
+            <option value="">All gear types</option>
+            <option value="trawlers">Trawlers</option>
+            <option value="tuna_purse_seines">Tuna purse seines</option>
+            <option value="other_purse_seines">Other purse seines</option>
+            <option value="drifting_longlines">Drifting longlines</option>
+            <option value="set_longlines">Set longlines</option>
+            <option value="set_gillnets">Set gillnets</option>
+            <option value="pole_and_line">Pole and line</option>
+            <option value="squid_jigger">Squid jiggers</option>
+            <option value="pots_and_traps">Pots and traps</option>
+            <option value="dredge_fishing">Dredge fishing</option>
           </select>
         </div>
+
+        <!-- Flag states use 3-letter country codes (ISO 3166-1 alpha-3). Add more as needed. -->
         <div class="field">
           <label for="flag-state">Flag state</label>
-          <select id="flag-state" disabled>
-            <option>All flag states</option>
+          <select id="flag-state">
+            <option value="">All flag states</option>
+            <option value="ARG">Argentina</option>
+            <option value="AUS">Australia</option>
+            <option value="BRA">Brazil</option>
+            <option value="CAN">Canada</option>
+            <option value="CHL">Chile</option>
+            <option value="CHN">China</option>
+            <option value="DNK">Denmark</option>
+            <option value="FRA">France</option>
+            <option value="GBR">United Kingdom</option>
+            <option value="IDN">Indonesia</option>
+            <option value="IND">India</option>
+            <option value="ISL">Iceland</option>
+            <option value="ITA">Italy</option>
+            <option value="JPN">Japan</option>
+            <option value="KOR">South Korea</option>
+            <option value="MEX">Mexico</option>
+            <option value="NLD">Netherlands</option>
+            <option value="NOR">Norway</option>
+            <option value="NZL">New Zealand</option>
+            <option value="PER">Peru</option>
+            <option value="PRT">Portugal</option>
+            <option value="RUS">Russia</option>
+            <option value="ESP">Spain</option>
+            <option value="TWN">Taiwan</option>
+            <option value="THA">Thailand</option>
+            <option value="USA">United States</option>
+            <option value="VNM">Vietnam</option>
+            <option value="ZAF">South Africa</option>
           </select>
         </div>
 
-        <button type="button" class="button" disabled>Apply filters</button>
-        <p class="panel-note">Filters will activate once data is connected.</p>
+        <button type="button" class="button" id="apply-filters">Apply filters</button>
+        <p class="panel-note">Activity is apparent fishing, estimated from vessel tracking signals. Vessels without a tracking signal are not shown.</p>
       </aside>
 
-      <!-- ---------- MAP FRAME ----------
-           >>> THE MAP GOES IN #map <<<
-           Initialise your map library (Leaflet, MapLibre, OpenLayers, etc.) on the
-           element with id="map". Remove the .map-placeholder block when you do.
-           The element is sized by CSS, so the map will fill it automatically. -->
+      <!-- ---------- MAP FRAME ---------- -->
       <div class="map-frame">
 
         <!-- Toolbar above the map -->
@@ -111,20 +154,30 @@
           <span class="map-title">Apparent fishing activity</span>
         </div>
 
-        <!-- Map container -->
-        <div id="map" class="map-canvas">
-          <!-- Placeholder, delete when the real map is added -->
-          <div class="map-placeholder">
-            <p class="map-placeholder-title">Map goes here</p>
-            <p class="map-placeholder-sub">Mount the map on <code>#map</code></p>
-          </div>
+        <!-- The stage holds the map and the details card that floats on top of it -->
+        <div class="map-stage">
+
+          <!-- >>> MapLibre draws the map into #map <<< -->
+          <div id="map" class="map-canvas" role="region" aria-label="Interactive map of fishing activity"></div>
+
+          <!-- Details card: shown when a grid cell is clicked -->
+          <aside class="cell-detail" id="cell-detail" hidden aria-live="polite">
+            <div class="cell-detail-head">
+              <h3>Selected cell</h3>
+              <button type="button" class="button button-quiet" id="cell-close">Close</button>
+            </div>
+            <p class="cell-detail-meta" id="cell-meta"></p>
+            <p class="cell-detail-state" id="cell-state"></p>
+            <ul class="vessel-list" id="vessel-list"></ul>
+          </aside>
         </div>
 
-        <!-- Status bar below the map: fill these in with real values from the map later -->
+        <!-- Status bar below the map: updated live by the script -->
         <div class="map-status">
           <span>Latitude <strong id="status-lat">–</strong></span>
           <span>Longitude <strong id="status-lng">–</strong></span>
           <span>Zoom <strong id="status-zoom">–</strong></span>
+          <span id="status-msg" class="status-msg" aria-live="polite"></span>
           <span class="status-right">Data to <strong id="status-date">–</strong></span>
         </div>
       </div>
@@ -153,7 +206,7 @@
       <p>The map uses data from Global Fishing Watch, which analyses vessel tracking signals to estimate where and when fishing is taking place.</p>
 
       <h2>Reading the map</h2>
-      <p>Brighter areas show more apparent fishing activity during the selected dates. Activity is estimated from vessel movement, so it shows likely fishing rather than confirmed catches.</p>
+      <p>Brighter areas show more apparent fishing activity during the selected dates. Click a cell to see the hours of activity and the vessels that contributed to it. Activity is estimated from vessel movement, so it shows likely fishing rather than confirmed catches.</p>
 
       <h2>Limitations</h2>
       <p>Vessels that do not broadcast a tracking signal, or whose signal is weak or switched off, may be missing or under-represented.</p>
@@ -165,6 +218,7 @@
 
   <!-- ============================================================
        FOOTER (shared by both pages)
+       Global Fishing Watch asks to be credited wherever its data is shown.
        ============================================================ -->
   <footer class="site-footer">
     <p>Data: Global Fishing Watch</p>
@@ -173,57 +227,454 @@
 
 
   <!-- ============================================================
-       JAVASCRIPT (jQuery only)
+       JAVASCRIPT
        ============================================================ -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.7.1/jquery.min.js"></script>
+  <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
   <script>
     $(function () {
 
+      /* ==========================================================
+         A. SITE BEHAVIOUR (pages, panel, theme)
+         ========================================================== */
+
+      // The map is created further down; these functions use it once it exists.
+      var map = null;
+
       // ---- 1. Page switching ------------------------------------
-      // Everything lives in this one file. Clicking a nav item hides the
-      // current .page and shows the one that matches data-page.
+      // Clicking a nav item hides the current .page and shows the matching one.
       $('[data-page]').on('click', function (e) {
         e.preventDefault();
         var target = $(this).data('page');            // "map" or "about"
 
-        $('.page').hide();                            // hide every page
-        $('#page-' + target).show();                  // show the chosen one
+        $('.page').hide();
+        $('#page-' + target).show();
 
-        // Update which nav button looks active
         $('.nav-link').removeClass('is-active').removeAttr('aria-current');
         $('.nav-link[data-page="' + target + '"]')
           .addClass('is-active')
           .attr('aria-current', 'page');
 
-        $(window).scrollTop(0);                       // start at the top of the new page
+        // The map can't measure itself while hidden, so re-measure when it comes back
+        if (target === 'map' && map) { map.resize(); }
+
+        $(window).scrollTop(0);
       });
 
       // ---- 2. Collapse / expand the filter panel -----------------
-      // The map gets the full width when the panel is hidden.
-      // NOTE: if the map library caches its size, tell it to resize here
-      // (for example map.invalidateSize() in Leaflet).
       $('#panel-toggle').on('click', function () {
-        var $workspace = $('.workspace');
-        var hidden = $workspace.toggleClass('panel-hidden').hasClass('panel-hidden');
-
-        $(this)
-          .text(hidden ? 'Show filters' : 'Hide filters')
-          .attr('aria-expanded', !hidden);
+        var hidden = $('.workspace').toggleClass('panel-hidden').hasClass('panel-hidden');
+        $(this).text(hidden ? 'Show filters' : 'Hide filters').attr('aria-expanded', !hidden);
+        if (map) { map.resize(); }                    // map needs the new width
       });
 
       // ---- 3. Light / dark theme --------------------------------
-      // Dark is set in the HTML (data-theme="dark"). This flips the attribute,
-      // and the CSS variables in styles.css do the rest.
       $('#theme-toggle').on('click', function () {
-        var $root = $('html');
-        var goingLight = $root.attr('data-theme') === 'dark';
-
-        $root.attr('data-theme', goingLight ? 'light' : 'dark');
-        $(this)
-          .text(goingLight ? 'Dark mode' : 'Light mode')
-          .attr('aria-pressed', goingLight);
+        var goingLight = $('html').attr('data-theme') === 'dark';
+        $('html').attr('data-theme', goingLight ? 'light' : 'dark');
+        $(this).text(goingLight ? 'Dark mode' : 'Light mode').attr('aria-pressed', goingLight);
+        applyMapTheme();                              // swap basemap + heatmap colours
       });
 
+
+      /* ==========================================================
+         B. GLOBAL FISHING WATCH MAP
+         ========================================================== */
+
+      // ---- Settings you may need to change ------------------------
+      var DATASET        = 'public-global-fishing-effort:latest'; // AIS apparent fishing activity
+      var API_PREFIX     = '/api';   // our server.js forwards /api/... to Global Fishing Watch and adds the token
+      var SOURCE_LAYER   = 'main';   // name of the layer inside GFW's vector tiles – VERIFY (see notes)
+      var MAX_TILE_ZOOM  = 12;       // the API serves tiles from zoom 0 to 12
+
+      // Basemap styles from OpenFreeMap: free, no API key. "fiord" is a dark blue style that suits
+      // the navy theme and "positron" is a clean light one. Their attribution appears on the map
+      // automatically. To use another provider, swap these two style URLs.
+      var BASEMAP_STYLES = {
+        dark:  'https://tiles.openfreemap.org/styles/fiord',
+        light: 'https://tiles.openfreemap.org/styles/positron'
+      };
+
+      // Heatmap colours, low to high activity. Dark theme gets light cells, light theme gets dark cells.
+      var RAMPS = {
+        dark:  ['#1f5f99', '#4a9ad6', '#8cc4f0', '#d6ecff', '#ffffff'],
+        light: ['#a9c8e8', '#5f95cb', '#2f6aa8', '#133f77', '#0a2342']
+      };
+      // Hours of activity at which each colour is reached (adjust once you see real values;
+      // the API's "Generate Bins" endpoint can calculate a proper scale).
+      var RAMP_STOPS = [0, 10, 100, 1000, 5000];
+
+      // The filters currently applied (used by BOTH the tiles and the click lookups)
+      var state = { from: '', to: '', interval: 'DAY', filter: '' };
+
+      // Name of the numeric property that holds the activity value. Found automatically from the
+      // first tiles that load (see discoverValueProperty). Until then cells use one flat colour.
+      var valueProp = null;
+
+
+      // ---- Helpers ----------------------------------------------
+      function currentTheme() { return $('html').attr('data-theme') === 'light' ? 'light' : 'dark'; }
+
+      function setMessage(text) { $('#status-msg').text(text || ''); }
+
+      function pad(n) { return (n < 10 ? '0' : '') + n; }
+      function isoDate(d) { return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); }
+
+      function formatHours(h) {
+        return Number(h).toLocaleString(undefined, { maximumFractionDigits: 1 });
+      }
+
+      // ---- Filters -> state ---------------------------------------
+      // Reads the filter panel, validates it and stores it in `state`.
+      function readFilters() {
+        var from = $('#date-from').val();
+        var to   = $('#date-to').val();
+        if (!from || !to || from > to) {
+          setMessage('Choose a start date that is on or before the end date.');
+          return false;
+        }
+
+        // Daily data can cover up to a year; longer ranges use monthly data.
+        var days = (new Date(to) - new Date(from)) / 86400000;
+
+        // GFW filter syntax, e.g.  flag in ('ESP') AND geartype in ('trawlers')
+        var parts = [];
+        var flag = $('#flag-state').val();
+        var gear = $('#gear-type').val();
+        if (flag) { parts.push("flag in ('" + flag + "')"); }
+        if (gear) { parts.push("geartype in ('" + gear + "')"); }
+
+        state = { from: from, to: to, interval: days <= 365 ? 'DAY' : 'MONTH', filter: parts.join(' AND ') };
+        $('#status-date').text(to);
+        setMessage('');
+        return true;
+      }
+
+      // Shared query values used by the tile request and the interaction request
+      function filterParams() {
+        var p = {
+          'datasets[0]': DATASET,
+          'date-range': state.from + ',' + state.to
+        };
+        if (state.filter) { p['filters[0]'] = state.filter; }
+        return p;
+      }
+
+      // Builds the tile URL template. {z}/{x}/{y} are filled in by MapLibre for each tile.
+      function tileUrl() {
+        var q = [
+          'format=MVT',
+          'interval=' + state.interval,
+          'temporal-aggregation=true',
+          'datasets%5B0%5D=' + encodeURIComponent(DATASET),
+          'date-range=' + encodeURIComponent(state.from + ',' + state.to)
+        ];
+        if (state.filter) { q.push('filters%5B0%5D=' + encodeURIComponent(state.filter)); }
+        // Must be an absolute URL because MapLibre requests tiles from a background worker
+        return location.origin + API_PREFIX + '/v3/4wings/tile/heatmap/{z}/{x}/{y}?' + q.join('&');
+      }
+
+
+      // ---- Colours ----------------------------------------------
+      function cellColor() {
+        var ramp = RAMPS[currentTheme()];
+        if (!valueProp) { return ramp[2]; }           // flat colour until the value property is known
+        var expr = ['interpolate', ['linear'], ['to-number', ['get', valueProp], 0]];
+        for (var i = 0; i < RAMP_STOPS.length; i++) { expr.push(RAMP_STOPS[i], ramp[i]); }
+        return expr;
+      }
+
+      // Switching theme loads the other basemap style. That wipes our own layers, so
+      // addDataLayers() (run on every "style.load") puts them back.
+      function applyMapTheme() {
+        if (!map) { return; }
+        $('#cell-detail').prop('hidden', true);       // the selection outline is lost on a style swap
+        map.setStyle(BASEMAP_STYLES[currentTheme()], { diff: false });
+      }
+
+      // Adds everything that sits on top of the basemap: the selection outline and the heatmap.
+      function addDataLayers() {
+        map.addSource('selected-cell', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+        map.addLayer({
+          id: 'selected-cell-line', type: 'line', source: 'selected-cell',
+          paint: { 'line-color': currentTheme() === 'dark' ? '#ffffff' : '#0a2342', 'line-width': 2 }
+        });
+        addActivityLayer();
+      }
+
+
+      // ---- Activity layer -----------------------------------------
+      // Adds (or re-adds) the heatmap using the current filters.
+      function addActivityLayer() {
+        if (map.getLayer('gfw-cells')) { map.removeLayer('gfw-cells'); }
+        if (map.getSource('gfw'))      { map.removeSource('gfw'); }
+        valueProp = null;
+
+        map.addSource('gfw', {
+          type: 'vector',
+          tiles: [tileUrl()],
+          tileSize: 512,                  // with 512px tiles, MapLibre's zoom level matches the tile zoom
+          minzoom: 0,
+          maxzoom: MAX_TILE_ZOOM,
+          attribution: 'Global Fishing Watch'
+        });
+
+        map.addLayer({
+          id: 'gfw-cells',
+          type: 'fill',
+          source: 'gfw',
+          'source-layer': SOURCE_LAYER,
+          paint: { 'fill-color': cellColor(), 'fill-opacity': 0.85 }
+        }, 'selected-cell-line');         // keep the selection outline on top
+      }
+
+      // The tiles hold one numeric property with the activity value, but the docs don't name it.
+      // So once tiles have loaded we look at one cell and use the first numeric property we find.
+      function discoverValueProperty() {
+        if (valueProp || !map.getSource('gfw')) { return; }
+        var feats = map.querySourceFeatures('gfw', { sourceLayer: SOURCE_LAYER });
+        if (!feats.length) { return; }
+        var props = feats[0].properties;
+        for (var key in props) {
+          if (key !== 'id' && typeof props[key] === 'number') {
+            valueProp = key;
+            map.setPaintProperty('gfw-cells', 'fill-color', cellColor());
+            console.info('Activity value property:', key, '(sample cell:', props, ')');
+            return;
+          }
+        }
+        console.info('No numeric property found on tile features:', props);
+      }
+
+
+      // ---- Self-check ---------------------------------------------
+      // Reads the layer names out of a vector tile (a tiny piece of protobuf decoding), so we can
+      // find the right SOURCE_LAYER without guessing.
+      function mvtLayerNames(buf) {
+        var b = new Uint8Array(buf), i = 0, names = [];
+        function varint() {
+          var r = 0, shift = 0, byte;
+          do { byte = b[i++]; r += (byte & 127) * Math.pow(2, shift); shift += 7; } while (byte & 128);
+          return r;
+        }
+        // Skips a field we don't care about; returns false if the data looks broken
+        function skip(wire) {
+          if (wire === 0) { varint(); return true; }
+          if (wire === 1) { i += 8; return true; }
+          if (wire === 5) { i += 4; return true; }
+          return false;
+        }
+        while (i < b.length) {
+          var tag = varint(), field = Math.floor(tag / 8), wire = tag % 8;
+          if (wire === 2) {
+            var len = varint(), end = i + len;
+            if (field === 3) {                      // field 3 of a tile = one layer
+              while (i < end) {
+                var t = varint(), f = Math.floor(t / 8), w = t % 8;
+                if (w === 2) {
+                  var l = varint();
+                  if (f === 1) { names.push(String.fromCharCode.apply(null, b.subarray(i, i + l))); } // field 1 = layer name
+                  i += l;
+                } else if (!skip(w)) { break; }
+              }
+            }
+            i = end;
+          } else if (!skip(wire)) { break; }
+        }
+        return names;
+      }
+
+      // Requests one test tile and explains in the status bar why the map might be empty.
+      function runDiagnostics() {
+        if (location.protocol === 'file:') {
+          setMessage('Open the site at http://localhost:3000 (started with node server.js), not by opening index.html directly.');
+          return;
+        }
+        var url = tileUrl().replace('{z}', 2).replace('{x}', 1).replace('{y}', 1);   // a tile over the North Atlantic
+
+        fetch(url).then(function (res) {
+          if (res.ok) { return res.arrayBuffer(); }
+          return res.text().then(function (text) {
+            console.error('Test tile failed:', res.status, text.slice(0, 300));
+            if (res.status === 404) {
+              // Our proxy marks its replies with an X-Via header. No header = some other server answered.
+              if (res.headers.get('X-Via') === 'fishery-proxy') {
+                setMessage('Global Fishing Watch could not find this data (404). Check the terminal running server.js for details.');
+              } else {
+                setMessage('This page is not being served by server.js (404). Close other local servers, run node server.js, and open http://localhost:3000.');
+              }
+            } else if (res.status === 401 || res.status === 403) {
+              setMessage('Global Fishing Watch rejected the API token. Check GFW_TOKEN when starting server.js.');
+            } else {
+              setMessage('Global Fishing Watch returned error ' + res.status + '. See the browser console for details.');
+            }
+            return null;
+          });
+        }).then(function (buf) {
+          if (!buf) { return; }
+          var names = mvtLayerNames(buf);
+          console.info('Test tile: ' + buf.byteLength + ' bytes, layers:', names);
+          if (!names.length) {
+            setMessage('The data server returned an empty tile for these dates and filters.');
+            return;
+          }
+          // Use the real layer name if our guess was wrong, then redraw
+          if (names.indexOf(SOURCE_LAYER) === -1) {
+            SOURCE_LAYER = names[0];
+            console.info('Using tile layer:', SOURCE_LAYER);
+            if (map && map.getSource('gfw')) { addActivityLayer(); }
+          }
+        }).catch(function (err) {
+          console.error(err);
+          setMessage('Could not reach the data server.');
+        });
+      }
+
+
+      // ---- Clicking a cell ------------------------------------------
+      // Each cell's id looks like "z/x/y/cell" (added by GFW in 2024), which is exactly what
+      // the Interaction endpoint needs.
+      function parseCellRef(feature) {
+        var raw = feature.properties && feature.properties.id !== undefined ? feature.properties.id : feature.id;
+        var parts = String(raw).split('/');
+        if (parts.length !== 4) { return null; }
+        var nums = parts.map(Number);
+        for (var i = 0; i < nums.length; i++) { if (isNaN(nums[i])) { return null; } }
+        return { z: nums[0], x: nums[1], y: nums[2], cell: nums[3] };
+      }
+
+      function showSelection(geometry) {
+        map.getSource('selected-cell').setData({ type: 'Feature', geometry: geometry, properties: {} });
+      }
+
+      function closeDetail() {
+        $('#cell-detail').prop('hidden', true);
+        map.getSource('selected-cell').setData({ type: 'FeatureCollection', features: [] });
+      }
+
+      // Asks the Interaction API which vessels are behind the clicked cell.
+      function loadCellDetails(ref, lngLat) {
+        var $list = $('#vessel-list').empty();
+        $('#cell-detail').prop('hidden', false);
+        $('#cell-meta').text(lngLat.lat.toFixed(2) + ', ' + lngLat.lng.toFixed(2) + '  ·  ' + state.from + ' to ' + state.to);
+        $('#cell-state').text('Loading vessels…');
+
+        $.ajax({
+          url: API_PREFIX + '/v3/4wings/interaction/' + ref.z + '/' + ref.x + '/' + ref.y + '/' + ref.cell,
+          data: filterParams(),
+          dataType: 'json'
+        }).done(function (res) {
+
+          // "entries" is a list of lists (one per dataset), each item = one vessel
+          var vessels = [].concat.apply([], res.entries || []);
+          vessels.sort(function (a, b) { return (b.hours || 0) - (a.hours || 0); });
+
+          if (!vessels.length) {
+            $('#cell-state').text('No vessels found in this cell for the selected dates.');
+            return;
+          }
+
+          var total = vessels.reduce(function (sum, v) { return sum + (v.hours || 0); }, 0);
+          $('#cell-state').text(formatHours(total) + ' hours of activity from ' + vessels.length +
+                                (vessels.length === 1 ? ' vessel' : ' vessels'));
+
+          // Show the 10 most active vessels. The id is Global Fishing Watch's vessel id.
+          vessels.slice(0, 10).forEach(function (v) {
+            var extra = [v.flag, v.geartype].filter(Boolean).join(', ');
+            var $li = $('<li>');
+            $('<span class="vessel-id">').text(String(v.id).slice(0, 12) + (extra ? '  (' + extra + ')' : '')).appendTo($li);
+            $('<span class="vessel-hours">').text(formatHours(v.hours || 0) + ' h').appendTo($li);
+            $list.append($li);
+          });
+
+        }).fail(function (xhr) {
+          $('#cell-state').text('Could not load details for this cell (error ' + xhr.status + '). Try again in a moment.');
+        });
+      }
+
+
+      // ---- Create the map -------------------------------------------
+      function initMap() {
+        map = new maplibregl.Map({
+          container: 'map',
+          center: [0, 20],
+          zoom: 1.6,
+          minZoom: 1,
+          maxZoom: 11,
+          attributionControl: { compact: true },
+          style: BASEMAP_STYLES[currentTheme()]
+        });
+
+        map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-left');
+        map.addControl(new maplibregl.ScaleControl({ unit: 'nautical' }), 'bottom-left');
+
+        // Runs once at start-up and again after every theme switch
+        map.on('style.load', addDataLayers);
+
+        // Keep trying to find the value property as tiles arrive
+        map.on('sourcedata', function (e) {
+          if (e.sourceId === 'gfw' && e.isSourceLoaded) { discoverValueProperty(); }
+        });
+
+        // Live readouts in the status bar
+        map.on('mousemove', function (e) {
+          $('#status-lat').text(e.lngLat.lat.toFixed(2));
+          $('#status-lng').text(e.lngLat.lng.toFixed(2));
+          // Pointer cursor when hovering a cell
+          var over = map.getLayer('gfw-cells') && map.queryRenderedFeatures(e.point, { layers: ['gfw-cells'] }).length;
+          map.getCanvas().style.cursor = over ? 'pointer' : '';
+        });
+        map.on('zoom', function () { $('#status-zoom').text(map.getZoom().toFixed(1)); });
+        $('#status-zoom').text(map.getZoom().toFixed(1));
+
+        // Click a cell -> show details; click empty sea -> close the card
+        map.on('click', function (e) {
+          if (!map.getLayer('gfw-cells')) { return; }
+          var feats = map.queryRenderedFeatures(e.point, { layers: ['gfw-cells'] });
+          if (!feats.length) { closeDetail(); return; }
+
+          var ref = parseCellRef(feats[0]);
+          if (!ref) {
+            console.warn('Unexpected cell format:', feats[0]);
+            setMessage('Could not read this cell\'s reference.');
+            return;
+          }
+          showSelection(feats[0].geometry);
+          loadCellDetails(ref, e.lngLat);
+        });
+
+        // Tell the user if the data server refuses or fails a request
+        map.on('error', function (e) {
+          if (e.sourceId !== 'gfw') { return; }
+          var status = e.error && e.error.status;
+          if (status === 401 || status === 403) {
+            setMessage('The data server rejected the API token. Check server.js is running with a valid GFW_TOKEN.');
+          } else {
+            setMessage('Some activity data could not be loaded.');
+          }
+        });
+      }
+
+
+      // ---- Wire up the filter panel and start ----------------------
+      $('#cell-close').on('click', closeDetail);
+
+      $('#apply-filters').on('click', function () {
+        if (!readFilters()) { return; }
+        closeDetail();
+        addActivityLayer();
+        runDiagnostics();
+      });
+
+      // Default dates: the last 30 days, ending a week ago (the newest data usually lags a few days)
+      var end = new Date();   end.setDate(end.getDate() - 7);
+      var start = new Date(end); start.setDate(start.getDate() - 30);
+      $('#date-from').val(isoDate(start));
+      $('#date-to').val(isoDate(end));
+      readFilters();
+
+      initMap();
+      runDiagnostics();
     });
   </script>
 </body>
