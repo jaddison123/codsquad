@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Fishing Activity Map</title>
+
+  <!-- Leaflet: the map library (CSS for its controls + the JavaScript) -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- Left-hand panel with the controls -->
+  <aside class="sidebar">
+    <header>
+      <h1>Fishing Activity</h1>
+      <p class="subtitle">Apparent fishing effort from AIS data · Global Fishing Watch</p>
+    </header>
+
+    <form id="map-form">
+      <section class="panel">
+        <h2>Date range</h2>
+        <div class="two-col">
+          <label>From <input type="date" id="start-date" required></label>
+          <label>To <input type="date" id="end-date" required></label>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Filters</h2>
+        <label class="field">Flag (country)
+          <select id="flag-select"><option value="">All flags</option></select>
+        </label>
+        <label class="field">Gear type
+          <select id="gear-select"><option value="">All gear types</option></select>
+        </label>
+      </section>
+
+      <button type="submit" class="primary">Update map</button>
+    </form>
+
+    <section class="panel">
+      <h2>Region</h2>
+      <!-- Buttons are added here by app.js from the server's region list -->
+      <div id="region-buttons" class="chip-grid">
+        <button type="button" class="chip active" data-region="">Whole world</button>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Fishing hours</h2>
+        <div class="toggle" role="group" aria-label="Group fishing hours by">
+          <button type="button" class="active" data-group="FLAG">By flag</button>
+          <button type="button" data-group="GEARTYPE">By gear</button>
+        </div>
+      </div>
+      <p id="stats-caption" class="hint"></p>
+      <div id="stats-chart" class="bar-chart"></div>
+    </section>
+
+    <section class="panel">
+      <h2>Vessel search</h2>
+      <form id="vessel-form" class="search-row">
+        <input type="search" id="vessel-query" placeholder="Name, MMSI or IMO" minlength="3" required>
+        <button type="submit">Search</button>
+      </form>
+      <p id="vessel-status" class="hint"></p>
+      <ul id="vessel-results" class="result-list"></ul>
+    </section>
+
+    <section class="panel">
+      <h2>Legend</h2>
+      <div class="legend-bar"></div>
+      <div class="legend-labels"><span>Less fishing</span><span>More fishing</span></div>
+    </section>
+
+    <p id="status" class="status" role="status"></p>
+  </aside>
+
+  <!-- The map fills the rest of the screen; the vessel panel floats over it -->
+  <main class="map-wrap">
+    <div id="map"></div>
+    <aside id="vessel-panel" class="drawer" hidden>
+      <button type="button" id="vessel-close" class="close" aria-label="Close">&times;</button>
+      <div id="vessel-details"></div>
+    </aside>
+  </main>
+
+  <!-- A filter that makes the heatmap brighter: GFW paints quiet areas almost
+       see-through, so we multiply each pixel's opacity by 4 and add a soft glow. -->
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <filter id="heat-glow">
+      <feComponentTransfer>
+        <feFuncA type="linear" slope="4" />
+      </feComponentTransfer>
+      <feGaussianBlur stdDeviation="1.2" result="blur" />
+      <feMerge>
+        <feMergeNode in="blur" />
+        <feMergeNode in="SourceGraphic" />
+      </feMerge>
+    </filter>
+  </svg>
+
+  <script src="app.js"></script>
+  <script src="vessels.js"></script>
+  <script src="stats.js"></script>
+
+  <!-- Floating tooltip shared by the chart -->
+  <div id="tooltip" class="tooltip" hidden></div>
+</body>
+</html>

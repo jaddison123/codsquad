@@ -1,0 +1,12 @@
+# Official Global Fishing Watch Python client
+gfw-api-python-client
+
+# Web framework + server that runs it
+fastapi
+uvicorn[standard]
+
+# Reads the secret token from the .env file
+python-dotenv
+
+# Used to forward map tiles from GFW to the browser
+httpx

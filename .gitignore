@@ -1,0 +1,12 @@
+# Secrets - NEVER commit your API token
+.env
+
+# Python virtual environment and caches
+.venv/
+__pycache__/
+*.pyc
+
+# Editor / OS clutter
+.vscode/
+.DS_Store
+Thumbs.db

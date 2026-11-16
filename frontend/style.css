@@ -1,0 +1,240 @@
+/* Colour palette, kept in one place so it's easy to change */
+:root {
+  --bg: #0b1a2b;          /* deep navy, like GFW's map UI */
+  --panel: #12263d;
+  --border: #1f3a58;
+  --text: #e6eef7;
+  --muted: #8ea5bd;
+  --accent: #00e6c3;      /* same teal as the heatmap */
+  --error: #ff7a7a;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  font-family: "Inter", system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+}
+
+/* Layout: sidebar on the left, map takes the rest */
+body { display: flex; }
+
+.sidebar {
+  width: 320px;
+  flex-shrink: 0;
+  padding: 20px 16px;
+  overflow-y: auto;
+  background: var(--bg);
+  border-right: 1px solid var(--border);
+}
+
+.map-wrap { flex: 1; position: relative; height: 100%; }
+#map { position: absolute; inset: 0; background: #1c1c1c; }
+
+/* Vessel search */
+.search-row { display: flex; gap: 6px; }
+.search-row input { flex: 1; min-width: 0; }
+.hint { font-size: 0.8rem; color: var(--muted); margin: 8px 0 0; }
+.hint.error { color: var(--error); }
+.result-list { list-style: none; padding: 0; margin: 8px 0 0; max-height: 260px; overflow-y: auto; }
+.result-list button {
+  width: 100%;
+  text-align: left;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  font-weight: 400;
+  margin-bottom: 6px;
+}
+.result-list button:hover { border-color: var(--accent); filter: none; }
+.result-name { font-weight: 600; display: block; }
+.result-meta { font-size: 0.75rem; color: var(--muted); }
+
+/* Vessel details drawer, floating over the right of the map */
+.drawer {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  bottom: 12px;
+  width: 360px;
+  max-width: calc(100% - 24px);
+  overflow-y: auto;
+  z-index: 1000;          /* above Leaflet's map layers */
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 18px 16px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+}
+.drawer[hidden] { display: none; }
+.drawer .close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  background: none;
+  color: var(--muted);
+  font-size: 1.4rem;
+  line-height: 1;
+  padding: 4px 8px;
+}
+.drawer h3 { margin: 0 30px 2px 0; font-size: 1.15rem; }
+.drawer h4 { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 18px 0 6px; }
+.drawer .aka { font-size: 0.8rem; color: var(--muted); margin: 0 0 4px; }
+.drawer .tag {
+  display: inline-block;
+  background: rgba(0, 230, 195, 0.15);
+  color: var(--accent);
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+.facts { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 0; font-size: 0.85rem; }
+.facts dt { color: var(--muted); }
+.facts dd { margin: 0; }
+.rows { list-style: none; padding: 0; margin: 0; font-size: 0.85rem; }
+.rows li { padding: 6px 0; border-bottom: 1px solid var(--border); }
+.rows li:last-child { border-bottom: none; }
+.rows .when { display: block; font-size: 0.75rem; color: var(--muted); }
+.empty { font-size: 0.85rem; color: var(--muted); margin: 0; }
+
+/* Stats panel: heading + "By flag / By gear" toggle on one line */
+.panel-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+.panel-head h2 { margin: 0; }
+.toggle { display: flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.toggle button {
+  background: var(--bg);
+  color: var(--muted);
+  border: none;
+  border-radius: 0;
+  font-weight: 500;
+  font-size: 0.75rem;
+  padding: 4px 8px;
+}
+.toggle button.active { background: var(--accent); color: #032a24; }
+
+/* Horizontal bar chart (plain HTML: one row per bar) */
+.bar-chart { margin-top: 10px; }
+.bar-row {
+  display: grid;
+  grid-template-columns: 96px 1fr auto;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 0;           /* taller hit area than the bar itself */
+  font-size: 0.78rem;
+  cursor: default;
+}
+.bar-label { color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bar-track { height: 8px; }
+.bar {
+  height: 100%;
+  min-width: 2px;
+  background: var(--accent);
+  border-radius: 0 4px 4px 0;   /* square at the baseline, rounded at the data end */
+}
+.bar-value { color: var(--muted); font-variant-numeric: tabular-nums; }
+.bar-row:hover .bar { filter: brightness(1.25); }
+.bar-row:hover .bar-label { color: var(--accent); }
+.bar-chart.loading { opacity: 0.4; }
+
+.tooltip {
+  position: fixed;
+  z-index: 2000;
+  pointer-events: none;
+  background: #0b1a2b;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 9px;
+  font-size: 0.78rem;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
+}
+.tooltip strong { display: block; margin-bottom: 2px; }
+.tooltip[hidden] { display: none; }
+
+/* Vessel events legend (in the details panel) */
+.event-legend { display: flex; gap: 14px; font-size: 0.8rem; margin: 6px 0; }
+.dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 5px; vertical-align: middle; }
+.dot.fishing { background: #d9741f; }
+.dot.port { background: #5b8def; box-shadow: 0 0 0 1.5px #fff; width: 11px; height: 11px; }
+button.link { background: none; color: var(--accent); padding: 0; font-weight: 500; font-size: 0.8rem; }
+
+/* Dark popups on the map */
+.leaflet-popup-content-wrapper, .leaflet-popup-tip { background: var(--panel); color: var(--text); }
+.leaflet-popup-content { font: 0.8rem/1.4 "Inter", system-ui, sans-serif; margin: 10px 12px; }
+.leaflet-container a.leaflet-popup-close-button { color: var(--muted); }
+
+/* Brighten the fishing heatmap using the SVG filter defined in index.html */
+.leaflet-heat-pane { filter: url(#heat-glow); }
+
+h1 { font-size: 1.3rem; margin: 0 0 4px; }
+h2 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 0 0 10px; }
+.subtitle { margin: 0 0 20px; font-size: 0.85rem; color: var(--muted); }
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px;
+  margin-bottom: 14px;
+}
+
+/* Form fields */
+.two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.two-col label, .field { display: flex; flex-direction: column; gap: 4px; font-size: 0.8rem; color: var(--muted); }
+.field + .field { margin-top: 10px; }
+button.primary { width: 100%; margin-bottom: 14px; padding: 9px; }
+
+/* Region "chips" (small toggle buttons) */
+.chip-grid { display: flex; flex-wrap: wrap; gap: 6px; }
+button.chip {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  font-weight: 500;
+  font-size: 0.8rem;
+  padding: 5px 10px;
+  border-radius: 999px;
+}
+button.chip.active { background: var(--accent); color: #032a24; border-color: var(--accent); }
+
+input, select, button {
+  font: inherit;
+  font-size: 0.9rem;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  padding: 7px 8px;
+  background: var(--bg);
+  color: var(--text);
+  color-scheme: dark;     /* makes the date picker pop-up dark too */
+}
+
+button {
+  background: var(--accent);
+  color: #032a24;
+  font-weight: 600;
+  border: none;
+  cursor: pointer;
+}
+button:hover { filter: brightness(1.1); }
+button:disabled { opacity: 0.6; cursor: wait; }
+
+/* Legend */
+.legend-bar {
+  height: 10px;
+  border-radius: 5px;
+  background: linear-gradient(to right, rgba(0, 230, 195, 0.1), rgba(0, 230, 195, 1));
+}
+.legend-labels { display: flex; justify-content: space-between; font-size: 0.75rem; color: var(--muted); margin-top: 4px; }
+
+.status { font-size: 0.85rem; color: var(--muted); min-height: 1.2em; }
+.status.error { color: var(--error); }
+
+/* Phones: stack the sidebar above the map */
+@media (max-width: 700px) {
+  body { flex-direction: column; }
+  .sidebar { width: 100%; max-height: 45vh; border-right: none; border-bottom: 1px solid var(--border); }
+  .drawer { width: auto; left: 12px; }
+}
