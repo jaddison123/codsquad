@@ -10,9 +10,11 @@ Then open http://127.0.0.1:8000 in your browser.
 """
 
 import asyncio
+import io
 import os
 import re
-from datetime import date
+import zipfile
+from datetime import date, timedelta
 from pathlib import Path
 
 import gfwapiclient as gfw
@@ -137,19 +139,54 @@ async def heatmap(start: date, end: date, flag: str | None = None, gear: str | N
     return {"tileUrl": f"/api/tiles/{{z}}/{{x}}/{{y}}?{query_string}"}
 
 
+
 @app.get("/api/tiles/{z}/{x}/{y}")
 async def tile(z: int, x: int, y: int, request: Request):
-    """Forward one map tile request to GFW, adding the secret token."""
-    r = await gfw_http.get(
-        f"{GFW_4WINGS}/tile/heatmap/{z}/{x}/{y}",
-        params=list(request.query_params.multi_items()),
-    )
-    return Response(
-        content=r.content,
-        status_code=r.status_code,
-        media_type=r.headers.get("content-type", "image/png"),
-        headers={"Cache-Control": "public, max-age=3600"},  # browser may reuse tiles for 1 hour
-    )
+    """Forward map tile requests to Global Fishing Watch."""
+
+    try:
+        r = await gfw_http.get(
+            f"{GFW_4WINGS}/tile/heatmap/{z}/{x}/{y}",
+            params=list(request.query_params.multi_items()),
+        )
+
+        # A missing tile can represent an area with no available data.
+        # Return a transparent PNG instead of displaying a broken tile.
+        if r.status_code == 404:
+            transparent_png = (
+                b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
+                b"\x00\x00\x00\x01\x00\x00\x00\x01"
+                b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89"
+                b"\x00\x00\x00\x0bIDAT\x08\xd7c\xf8\x0f"
+                b"\x00\x01\x01\x01\x00\x18\xdd\x8d\xb0"
+                b"\x00\x00\x00\x00IEND\xaeB`\x82"
+            )
+
+            return Response(
+                content=transparent_png,
+                media_type="image/png",
+                headers={"Cache-Control": "public, max-age=300"},
+            )
+
+        if r.is_error:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Global Fishing Watch tile request failed: {r.status_code}"
+            )
+
+        return Response(
+            content=r.content,
+            status_code=200,
+            media_type=r.headers.get("content-type", "image/png"),
+            headers={"Cache-Control": "public, max-age=3600"},
+        )
+
+    except httpx.RequestError as err:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Could not contact Global Fishing Watch: {str(err)}"
+        )
+
 
 
 # ---------------------------------------------------------------------------
@@ -240,6 +277,86 @@ def bbox_to_geojson(bbox):
     """[west, south, east, north] -> a GeoJSON rectangle (a closed ring of 5 corners)."""
     w, s, e, n = bbox
     return {"type": "Polygon", "coordinates": [[[w, s], [e, s], [e, n], [w, n], [w, s]]]}
+
+
+# ---------------------------------------------------------------------------
+# 5. Download detailed fishing activity as CSV
+# ---------------------------------------------------------------------------
+@app.get("/api/download")
+async def download_fishing_data(
+    start: date,
+    end: date,
+    region: str | None = None,
+    flag: str | None = None,
+    gear: str | None = None,
+):
+    """
+    Download daily fishing-effort records for the selected date range.
+    Rows represent daily grid-cell activity (not individual AIS positions).
+    """
+    if end <= start:
+        raise HTTPException(status_code=400, detail="End date must be after start date.")
+    if end - start > timedelta(days=90):
+        raise HTTPException(
+            status_code=400,
+            detail="Please choose a date range of 90 days or less for the CSV download.",
+        )
+    if region and region not in REGIONS:
+        raise HTTPException(status_code=400, detail=f"Unknown region: {region}")
+
+    filter_text = build_filter(start, end, flag, gear)
+    bbox = REGIONS[region]["bbox"] if region else WORLD_BBOX
+    report_params = {
+        "format": "CSV",
+        "datasets[0]": FISHING_DATASET,
+        "date-range": f"{start.isoformat()},{end.isoformat()}",
+        "spatial-resolution": "LOW",
+        "spatial-aggregation": "false",
+        "temporal-resolution": "DAILY",
+        "group-by": "FLAGANDGEARTYPE",
+    }
+    if filter_text:
+        report_params["filters[0]"] = filter_text
+
+    try:
+        report = await gfw_http.post(
+            f"{GFW_4WINGS}/report",
+            params=report_params,
+            json={"geojson": bbox_to_geojson(bbox)},
+            headers={"Accept": "application/zip, text/csv, application/json"},
+            timeout=100,
+        )
+    except httpx.RequestError as err:
+        raise HTTPException(status_code=502, detail=f"Could not contact Global Fishing Watch: {err}")
+
+    if report.is_error:
+        detail = report.text[:1000]
+        raise HTTPException(
+            status_code=502,
+            detail=f"Global Fishing Watch report failed ({report.status_code}): {detail}",
+        )
+
+    content = report.content
+    csv_content = content
+    if zipfile.is_zipfile(io.BytesIO(content)):
+        try:
+            with zipfile.ZipFile(io.BytesIO(content)) as archive:
+                csv_files = [name for name in archive.namelist() if name.lower().endswith(".csv")]
+                if not csv_files:
+                    raise HTTPException(status_code=502, detail="GFW returned a ZIP file without a CSV.")
+                csv_content = archive.read(csv_files[0])
+        except zipfile.BadZipFile:
+            raise HTTPException(status_code=502, detail="GFW returned an invalid ZIP file.")
+
+    if not csv_content or b"," not in csv_content[:4096]:
+        raise HTTPException(status_code=502, detail="GFW did not return a readable CSV report.")
+
+    filename = f"fishing_activity_{start.isoformat()}_to_{end.isoformat()}.csv"
+    return Response(
+        content=csv_content,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @app.get("/api/stats")
