@@ -216,6 +216,66 @@ gearSelect.addEventListener("change", loadHeatmap);
 // Wait until every script on the page has loaded, so stats.js is listening
 // before the first "filters-changed" announcement.
 window.addEventListener("DOMContentLoaded", () => {
+  addDownloadButton();
   loadOptions().catch(() => setStatus("Could not load filter options.", true));
   loadHeatmap();
 });
+
+// ---- CSV download: export the same filters currently selected on the map ----
+function addDownloadButton() {
+  if (document.getElementById("download-csv-button")) return;
+
+  const downloadButton = document.createElement("button");
+  downloadButton.type = "button";
+  downloadButton.id = "download-csv-button";
+  downloadButton.textContent = "Download fishing data (CSV)";
+  downloadButton.className = updateButton.className;
+  downloadButton.style.marginTop = "8px";
+  downloadButton.style.width = "100%";
+
+  downloadButton.addEventListener("click", async () => {
+    const start = startInput.value;
+    const end = endInput.value;
+    if (!start || !end || end <= start) {
+      setStatus("Choose a valid date range before downloading.", true);
+      return;
+    }
+
+    const params = new URLSearchParams({ start, end });
+    if (flagSelect.value) params.set("flag", flagSelect.value);
+    if (gearSelect.value) params.set("gear", gearSelect.value);
+    if (selectedRegion) params.set("region", selectedRegion);
+
+    downloadButton.disabled = true;
+    setStatus("Preparing your CSV download…");
+    try {
+      const response = await fetch(`/api/download?${params.toString()}`);
+      if (!response.ok) {
+        let message = "Download failed.";
+        try {
+          const error = await response.json();
+          message = error.detail || message;
+        } catch (_) {}
+        throw new Error(message);
+      }
+
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `fishing_activity_${start}_to_${end}.csv`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      setStatus("CSV downloaded successfully.");
+    } catch (error) {
+      setStatus(`Could not download CSV: ${error.message}`, true);
+    } finally {
+      downloadButton.disabled = false;
+    }
+  });
+
+  updateButton.insertAdjacentElement("afterend", downloadButton);
+}
+
