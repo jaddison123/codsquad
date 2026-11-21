@@ -186,6 +186,17 @@ h2 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.06em; color
 .two-col label, .field { display: flex; flex-direction: column; gap: 4px; font-size: 0.8rem; color: var(--muted); }
 .field + .field { margin-top: 10px; }
 button.primary { width: 100%; margin-bottom: 14px; padding: 9px; }
+/* Download sits right under "Update map", outlined so it reads as secondary */
+.download-row { display: flex; gap: 8px; margin: -6px 0 14px; }
+.download-row select { flex: 0 0 auto; width: auto; }
+button.download {
+  flex: 1;
+  padding: 9px;
+  background: transparent;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+}
+button.download:disabled { opacity: 0.5; cursor: wait; }
 
 /* Region "chips" (small toggle buttons) */
 .chip-grid { display: flex; flex-wrap: wrap; gap: 6px; }

@@ -10,10 +10,13 @@ Then open http://127.0.0.1:8000 in your browser.
 """
 
 import asyncio
+import csv
 import io
 import os
 import re
+import struct
 import zipfile
+import zlib
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -139,6 +142,20 @@ async def heatmap(start: date, end: date, flag: str | None = None, gear: str | N
     return {"tileUrl": f"/api/tiles/{{z}}/{{x}}/{{y}}?{query_string}"}
 
 
+def make_transparent_png() -> bytes:
+    """Build a valid 1x1 fully transparent PNG (with correct checksums)."""
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return (struct.pack(">I", len(data)) + kind + data
+                + struct.pack(">I", zlib.crc32(kind + data)))
+
+    header = struct.pack(">IIBBBBB", 1, 1, 8, 6, 0, 0, 0)  # 1x1, 8-bit RGBA
+    pixels = zlib.compress(b"\x00" + b"\x00\x00\x00\x00")  # filter byte + one clear pixel
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header)
+            + chunk(b"IDAT", pixels) + chunk(b"IEND", b""))
+
+
+TRANSPARENT_PNG = make_transparent_png()
+
 
 @app.get("/api/tiles/{z}/{x}/{y}")
 async def tile(z: int, x: int, y: int, request: Request):
@@ -150,20 +167,11 @@ async def tile(z: int, x: int, y: int, request: Request):
             params=list(request.query_params.multi_items()),
         )
 
-        # A missing tile can represent an area with no available data.
+        # A missing or empty tile means an area with no fishing data.
         # Return a transparent PNG instead of displaying a broken tile.
-        if r.status_code == 404:
-            transparent_png = (
-                b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
-                b"\x00\x00\x00\x01\x00\x00\x00\x01"
-                b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89"
-                b"\x00\x00\x00\x0bIDAT\x08\xd7c\xf8\x0f"
-                b"\x00\x01\x01\x01\x00\x18\xdd\x8d\xb0"
-                b"\x00\x00\x00\x00IEND\xaeB`\x82"
-            )
-
+        if r.status_code in (204, 404) or (r.status_code == 200 and not r.content):
             return Response(
-                content=transparent_png,
+                content=TRANSPARENT_PNG,
                 media_type="image/png",
                 headers={"Cache-Control": "public, max-age=300"},
             )
@@ -279,86 +287,6 @@ def bbox_to_geojson(bbox):
     return {"type": "Polygon", "coordinates": [[[w, s], [e, s], [e, n], [w, n], [w, s]]]}
 
 
-# ---------------------------------------------------------------------------
-# 5. Download detailed fishing activity as CSV
-# ---------------------------------------------------------------------------
-@app.get("/api/download")
-async def download_fishing_data(
-    start: date,
-    end: date,
-    region: str | None = None,
-    flag: str | None = None,
-    gear: str | None = None,
-):
-    """
-    Download daily fishing-effort records for the selected date range.
-    Rows represent daily grid-cell activity (not individual AIS positions).
-    """
-    if end <= start:
-        raise HTTPException(status_code=400, detail="End date must be after start date.")
-    if end - start > timedelta(days=90):
-        raise HTTPException(
-            status_code=400,
-            detail="Please choose a date range of 90 days or less for the CSV download.",
-        )
-    if region and region not in REGIONS:
-        raise HTTPException(status_code=400, detail=f"Unknown region: {region}")
-
-    filter_text = build_filter(start, end, flag, gear)
-    bbox = REGIONS[region]["bbox"] if region else WORLD_BBOX
-    report_params = {
-        "format": "CSV",
-        "datasets[0]": FISHING_DATASET,
-        "date-range": f"{start.isoformat()},{end.isoformat()}",
-        "spatial-resolution": "LOW",
-        "spatial-aggregation": "false",
-        "temporal-resolution": "DAILY",
-        "group-by": "FLAGANDGEARTYPE",
-    }
-    if filter_text:
-        report_params["filters[0]"] = filter_text
-
-    try:
-        report = await gfw_http.post(
-            f"{GFW_4WINGS}/report",
-            params=report_params,
-            json={"geojson": bbox_to_geojson(bbox)},
-            headers={"Accept": "application/zip, text/csv, application/json"},
-            timeout=100,
-        )
-    except httpx.RequestError as err:
-        raise HTTPException(status_code=502, detail=f"Could not contact Global Fishing Watch: {err}")
-
-    if report.is_error:
-        detail = report.text[:1000]
-        raise HTTPException(
-            status_code=502,
-            detail=f"Global Fishing Watch report failed ({report.status_code}): {detail}",
-        )
-
-    content = report.content
-    csv_content = content
-    if zipfile.is_zipfile(io.BytesIO(content)):
-        try:
-            with zipfile.ZipFile(io.BytesIO(content)) as archive:
-                csv_files = [name for name in archive.namelist() if name.lower().endswith(".csv")]
-                if not csv_files:
-                    raise HTTPException(status_code=502, detail="GFW returned a ZIP file without a CSV.")
-                csv_content = archive.read(csv_files[0])
-        except zipfile.BadZipFile:
-            raise HTTPException(status_code=502, detail="GFW returned an invalid ZIP file.")
-
-    if not csv_content or b"," not in csv_content[:4096]:
-        raise HTTPException(status_code=502, detail="GFW did not return a readable CSV report.")
-
-    filename = f"fishing_activity_{start.isoformat()}_to_{end.isoformat()}.csv"
-    return Response(
-        content=csv_content,
-        media_type="text/csv; charset=utf-8",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-    )
-
-
 @app.get("/api/stats")
 async def stats(
     start: date,
@@ -412,8 +340,150 @@ async def stats(
 
 
 # ---------------------------------------------------------------------------
-# 6. Serve the website itself (the frontend folder) at http://127.0.0.1:8000/
+# 6. Download detailed fishing activity as CSV
+#
+# Each row is one grid cell for one day (or one hour), so the file grows fast:
+# a whole-world, 90-day daily download is ~190 MB and takes GFW over 100
+# seconds, and hourly files have roughly 4x the rows of daily ones. So the
+# longest allowed date range depends on the detail level and on whether a
+# region is selected.
+# ---------------------------------------------------------------------------
+# resolution -> (max days with a region, max days for the whole world)
+DOWNLOAD_LIMITS = {
+    "DAILY": (90, 7),
+    "HOURLY": (30, 2),
+}
+
+
+def sort_csv_by_time(csv_bytes: bytes) -> bytes:
+    """GFW returns rows in no particular order; sort them by time, then position."""
+    lines = list(csv.reader(io.StringIO(csv_bytes.decode("utf-8-sig"))))
+    if not lines:
+        return csv_bytes
+    header, rows = lines[0], lines[1:]
+    if "Time Range" not in header:
+        return csv_bytes
+    t = header.index("Time Range")
+    lat = header.index("Lat") if "Lat" in header else None
+    lon = header.index("Lon") if "Lon" in header else None
+
+    def key(row):
+        def num(i):
+            try:
+                return float(row[i]) if i is not None else 0.0
+            except (ValueError, IndexError):
+                return 0.0
+        return (row[t] if t < len(row) else "", num(lat), num(lon))
+
+    rows.sort(key=key)
+    out = io.StringIO()
+    csv.writer(out, lineterminator="\n").writerows([header, *rows])
+    return out.getvalue().encode("utf-8")
+
+
+@app.get("/api/download")
+async def download_fishing_data(
+    start: date,
+    end: date,
+    region: str | None = None,
+    flag: str | None = None,
+    gear: str | None = None,
+    resolution: str = "DAILY",
+):
+    """
+    Download fishing-effort records for the selected date range, one row per
+    grid cell per day (resolution=DAILY) or per hour (resolution=HOURLY).
+    These are grid-cell totals, not individual AIS positions.
+    """
+    if resolution not in DOWNLOAD_LIMITS:
+        raise HTTPException(status_code=400, detail="resolution must be DAILY or HOURLY.")
+    if end <= start:
+        raise HTTPException(status_code=400, detail="End date must be after start date.")
+    if region and region not in REGIONS:
+        raise HTTPException(status_code=400, detail=f"Unknown region: {region}")
+    region_days, world_days = DOWNLOAD_LIMITS[resolution]
+    max_days = region_days if region else world_days
+    if end - start > timedelta(days=max_days):
+        level = resolution.lower()
+        if region:
+            detail = f"{level.capitalize()} downloads are limited to {max_days} days."
+        else:
+            detail = (f"Whole-world {level} downloads are limited to {max_days} days. "
+                      f"Pick a region for up to {region_days} days.")
+        raise HTTPException(status_code=400, detail=detail)
+
+    filter_text = build_filter(start, end, flag, gear)
+    bbox = REGIONS[region]["bbox"] if region else WORLD_BBOX
+    report_params = {
+        "format": "CSV",
+        "datasets[0]": FISHING_DATASET,
+        "date-range": f"{start.isoformat()},{end.isoformat()}",
+        "spatial-resolution": "LOW",
+        "spatial-aggregation": "false",
+        "temporal-resolution": resolution,
+        "group-by": "FLAGANDGEARTYPE",
+    }
+    if filter_text:
+        report_params["filters[0]"] = filter_text
+
+    try:
+        report = await gfw_http.post(
+            f"{GFW_4WINGS}/report",
+            params=report_params,
+            json={"geojson": bbox_to_geojson(bbox)},
+            headers={"Accept": "application/zip, text/csv, application/json"},
+            timeout=100,
+        )
+    except httpx.RequestError as err:
+        raise HTTPException(status_code=502, detail=f"Could not contact Global Fishing Watch: {err}")
+
+    if report.is_error:
+        detail = report.text[:1000]
+        raise HTTPException(
+            status_code=502,
+            detail=f"Global Fishing Watch report failed ({report.status_code}): {detail}",
+        )
+
+    content = report.content
+    csv_content = content
+    if zipfile.is_zipfile(io.BytesIO(content)):
+        try:
+            with zipfile.ZipFile(io.BytesIO(content)) as archive:
+                csv_files = [name for name in archive.namelist() if name.lower().endswith(".csv")]
+                if not csv_files:
+                    raise HTTPException(status_code=502, detail="GFW returned a ZIP file without a CSV.")
+                csv_content = archive.read(csv_files[0])
+        except zipfile.BadZipFile:
+            raise HTTPException(status_code=502, detail="GFW returned an invalid ZIP file.")
+
+    if not csv_content or b"," not in csv_content[:4096]:
+        raise HTTPException(status_code=502, detail="GFW did not return a readable CSV report.")
+
+    csv_content = sort_csv_by_time(csv_content)
+    filename = f"fishing_activity_{resolution.lower()}_{start.isoformat()}_to_{end.isoformat()}.csv"
+    return Response(
+        content=csv_content,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+# ---------------------------------------------------------------------------
+# 7. Serve the website itself (the frontend folder) at http://127.0.0.1:8000/
 #    This must come LAST so it doesn't hide the /api routes above.
 # ---------------------------------------------------------------------------
+@app.middleware("http")
+async def revalidate_site_files(request: Request, call_next):
+    """
+    Make browsers check for a newer app.js / style.css / index.html on every
+    page load, so a new deploy shows up without a hard refresh. Unchanged files
+    still come back as a quick "304 Not Modified", so this costs very little.
+    """
+    response = await call_next(request)
+    if not request.url.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
+
+
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")
