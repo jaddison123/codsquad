@@ -354,7 +354,22 @@ downloadButton.addEventListener("click", async () => {
     return;
   }
 
+  // Big download? Ask first (see section 7b below)
   downloadButton.disabled = true;
+  setStatus("Checking the size of this download…");
+  const choice = await checkDownloadSize(params, format, resolution);
+  if (choice !== "download") {
+    downloadButton.disabled = false;
+    setStatus(choice === "charts" ? "" : "Download cancelled.");
+    if (choice === "charts") {
+      formatSelect.value = "chart";
+      updateDownloadLabel();
+      params.set("format", "chart");
+      openChartView(params);
+    }
+    return;
+  }
+
   setStatus(format === "xlsx" ? "Preparing your spreadsheet…" : "Preparing your CSV download…");
   try {
     const response = await fetch(`/api/download?${params.toString()}`);
@@ -384,6 +399,78 @@ downloadButton.addEventListener("click", async () => {
     downloadButton.disabled = false;
   }
 });
+
+// ---- 7b. Warn before big downloads ------------------------------------------
+// We can't know a download's exact size without building it, but the
+// fishing-hours total from /api/stats (the sidebar chart's numbers, usually
+// already cached on the server) gives a good guess. Measured on real data, one
+// row holds about 4 hours of fishing in quiet seas and up to ~23 in very busy
+// ones (busy squares pack more hours into each row), so the estimate is a
+// range. Hourly files have ~3.5x the rows of daily ones.
+const HOURS_PER_ROW = { most: 23, least: 4 };
+const HOURLY_ROW_FACTOR = 3.5;
+const EXCEL_MAX_ROWS = 1_048_576;      // Excel can't open more rows than this
+const WARN_ROWS = { xlsx: 100_000, csv: 500_000 }; // warn if the high end passes this
+const CSV_BYTES_PER_ROW = 55;
+
+// Resolves to { low, high } estimated rows, or null if we can't tell
+async function estimateRows(params, resolution) {
+  const statsParams = new URLSearchParams(params);
+  ["format", "resolution"].forEach((k) => statsParams.delete(k));
+  const response = await fetch(`/api/stats?${statsParams}`);
+  if (!response.ok) return null; // can't tell: don't block the download
+  const { totalHours } = await response.json();
+  const factor = resolution === "HOURLY" ? HOURLY_ROW_FACTOR : 1;
+  return {
+    low: (totalHours / HOURS_PER_ROW.most) * factor,
+    high: (totalHours / HOURS_PER_ROW.least) * factor,
+  };
+}
+
+// Rounds to something readable: 223,456 -> "220,000"
+function roughly(n) {
+  if (n < 100) return String(Math.round(n));
+  const digits = Math.floor(Math.log10(n)) - 1;
+  return (Math.round(n / 10 ** digits) * 10 ** digits).toLocaleString("en-GB");
+}
+
+// Resolves to "download", "charts" or "cancel"
+async function checkDownloadSize(params, format, resolution) {
+  let rows;
+  try {
+    rows = await estimateRows(params, resolution);
+  } catch (_) {
+    rows = null;
+  }
+  if (rows === null || rows.high < WARN_ROWS[format]) return "download";
+
+  const range = `roughly ${roughly(rows.low)} to ${roughly(rows.high)} rows`;
+  const title = document.getElementById("size-warning-title");
+  const text = document.getElementById("size-warning-text");
+  const alternatives = "Try a shorter date range, a smaller area, or the charts, which show the same data in seconds.";
+  if (format === "xlsx" && rows.low > EXCEL_MAX_ROWS) {
+    title.textContent = "This is too big for Excel";
+    text.textContent = `This download would have ${range}. Excel can't open more than about 1 million, `
+      + `so the download will fail. ${alternatives} The CSV option has no row limit.`;
+  } else if (format === "xlsx" && rows.high > EXCEL_MAX_ROWS) {
+    title.textContent = "This might be too big for Excel";
+    text.textContent = `Depending on how busy the area is, this download could have ${range}. `
+      + `Excel can't open more than about 1 million, so it may fail after a long wait. ${alternatives}`;
+  } else {
+    const size = format === "csv"
+      ? ` (about ${roughly((rows.low * CSV_BYTES_PER_ROW) / 1e6)}–${roughly((rows.high * CSV_BYTES_PER_ROW) / 1e6)} MB)`
+      : "";
+    title.textContent = "This is a large download";
+    text.textContent = `Depending on how busy the area is, this download could have ${range}${size}, `
+      + "and may take a few minutes to prepare. The charts show the same data in seconds.";
+  }
+
+  const sizeDialog = document.getElementById("size-warning"); // defined after this script in index.html
+  return new Promise((resolve) => {
+    sizeDialog.addEventListener("close", () => resolve(sizeDialog.returnValue || "cancel"), { once: true });
+    sizeDialog.showModal();
+  });
+}
 
 // ---- 8. Start up ---------------------------------------------------------
 // Wait until every script on the page has loaded, so stats.js is listening

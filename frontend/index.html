@@ -166,6 +166,20 @@
   </section>
   <script src="charts.js"></script>
 
+  <!-- Shown by app.js before a big Excel/CSV download. The button pressed
+       becomes the dialog's returnValue: "download", "charts" or "cancel". -->
+  <dialog id="size-warning" class="size-warning" aria-labelledby="size-warning-title">
+    <form method="dialog">
+      <h2 id="size-warning-title"></h2>
+      <p id="size-warning-text"></p>
+      <div class="sw-buttons">
+        <button value="cancel" class="sw-secondary">Cancel</button>
+        <button value="charts" class="sw-secondary">Show charts instead</button>
+        <button value="download" class="primary">Download anyway</button>
+      </div>
+    </form>
+  </dialog>
+
   <!-- Floating tooltip shared by the chart -->
   <div id="tooltip" class="tooltip" hidden></div>
 </body>

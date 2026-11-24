@@ -515,7 +515,13 @@ async function openChartView(params) {
   document.body.classList.add("cv-open");
   cvContent.hidden = true;
   disposeCharts();
-  showMessage("Fetching fishing data… big areas or long date ranges can take up to a minute.");
+  // Charts are quick (a few seconds even for the whole world), so no warning
+  // dialog: just a heads-up while loading when the area is very large.
+  const [w, s, e, n] = f.bbox || [];
+  const hugeArea = !f.region && (!f.bbox || (e - w) * (n - s) > 1000);
+  showMessage(hugeArea
+    ? "Fetching fishing data… this covers a very large area, so it may take 10–20 seconds."
+    : "Fetching fishing data…");
 
   try {
     const [response] = await Promise.all([fetch(`/api/download?${params}`), loadChartLibs()]);
