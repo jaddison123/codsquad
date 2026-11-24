@@ -78,6 +78,18 @@ def gfw_busy(result) -> bool:
     return "429" in str(result)  # the GFW Python package raises an error instead
 
 
+# Shown instead of GFW's raw error when it's still busy after we've waited
+GFW_BUSY_MESSAGE = ("Global Fishing Watch is still busy with another large request. "
+                    "Please try again in a few minutes.")
+
+
+def report_failed(err) -> HTTPException:
+    """A readable error for a failed GFW report."""
+    if gfw_busy(err):
+        return HTTPException(status_code=503, detail=GFW_BUSY_MESSAGE)
+    return HTTPException(status_code=502, detail=f"GFW report failed: {err}")
+
+
 async def queued_report(make_request):
     """
     Run one GFW report at a time. If GFW still says it's busy (e.g. a report
@@ -412,7 +424,7 @@ async def stats(
             filters=[filter_text] if filter_text else None,
         ))
     except Exception as err:
-        raise HTTPException(status_code=502, detail=f"GFW report failed: {err}")
+        raise report_failed(err)
 
     rows = []
     for item in result.data():
@@ -479,6 +491,44 @@ def sort_csv_by_time(csv_bytes: bytes) -> bytes:
     return out.getvalue().encode("utf-8")
 
 
+chart_cache = TTLCache(max_items=200, ttl=CACHE_SECONDS)
+
+
+async def chart_totals(start: date, end: date, area: list[float], filter_text: str | None, meta: dict):
+    """
+    The numbers for the in-site chart view. Rather than fetching every raw row
+    (very slow for busy regions), GFW adds up the totals itself in three small
+    reports; see chartdata.py for what each one is used for.
+    """
+    cache_key = (start, end, tuple(area), filter_text)
+    cached = chart_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    async def report(**options):
+        result = await queued_report(lambda: gfw_client.fourwings.create_fishing_effort_report(
+            spatial_resolution="LOW",
+            start_date=start.isoformat(),
+            end_date=end.isoformat(),
+            geojson=bbox_to_geojson(area),
+            filters=[filter_text] if filter_text else None,
+            **options,
+        ))
+        return [item.model_dump() for item in result.data()]
+
+    try:
+        # One after the other: GFW only runs one report at a time for our token
+        per_day_country = await report(temporal_resolution="DAILY", spatial_aggregation=True, group_by="FLAG")
+        per_method = await report(temporal_resolution="ENTIRE", spatial_aggregation=True, group_by="GEARTYPE")
+        per_square = await report(temporal_resolution="ENTIRE", spatial_aggregation=False)
+    except Exception as err:
+        raise report_failed(err)
+
+    data = chartdata.build_chart_data(per_day_country, per_method, per_square, meta, area)
+    chart_cache.set(cache_key, data)
+    return data
+
+
 @app.get("/api/download")
 async def download_fishing_data(
     start: date,
@@ -518,6 +568,28 @@ async def download_fishing_data(
         raise HTTPException(status_code=400, detail=detail)
 
     filter_text = build_filter(start, end, flag, gear)
+
+    # Excel workbook and chart view both describe the choices in words
+    if region:
+        area_name = REGIONS[region]["name"]
+    elif bbox:
+        w, s, e, n = area
+        area_name = f"Drawn area ({s:g}° to {n:g}° latitude, {w:g}° to {e:g}° longitude)"
+    else:
+        area_name = "Whole world"
+    meta = {
+        "area": area_name,
+        "start": start,
+        "last_day": end - timedelta(days=1),  # GFW's end date is not included
+        "flag": FLAGS[flag] if flag else "All countries",
+        "gear": GEAR_TYPES[gear] if gear else "All methods",
+        "hourly": resolution == "HOURLY",
+    }
+
+    if format == "chart":
+        # The charts only need totals, so they skip the slow raw-data fetch below
+        return await chart_totals(start, end, area, filter_text, meta)
+
     report_params = {
         "format": "CSV",
         "datasets[0]": FISHING_DATASET,
@@ -546,6 +618,8 @@ async def download_fishing_data(
         except httpx.RequestError as err:
             raise HTTPException(status_code=502, detail=f"Could not contact Global Fishing Watch: {err}")
 
+        if gfw_busy(report):
+            raise HTTPException(status_code=503, detail=GFW_BUSY_MESSAGE)
         if report.is_error:
             detail = report.text[:1000]
             raise HTTPException(
@@ -578,27 +652,6 @@ async def download_fishing_data(
             media_type="text/csv; charset=utf-8",
             headers={"Content-Disposition": f'attachment; filename="{filename}.csv"'},
         )
-
-    # Excel workbook and chart view both describe the choices in words
-    if region:
-        area_name = REGIONS[region]["name"]
-    elif bbox:
-        w, s, e, n = area
-        area_name = f"Drawn area ({s:g}° to {n:g}° latitude, {w:g}° to {e:g}° longitude)"
-    else:
-        area_name = "Whole world"
-    meta = {
-        "area": area_name,
-        "start": start,
-        "last_day": end - timedelta(days=1),  # GFW's end date is not included
-        "flag": FLAGS[flag] if flag else "All countries",
-        "gear": GEAR_TYPES[gear] if gear else "All methods",
-        "hourly": resolution == "HOURLY",
-    }
-
-    if format == "chart":
-        # Totals for the in-site chart view (see chartdata.py); FastAPI sends it as JSON
-        return await asyncio.to_thread(chartdata.build_chart_data, csv_content, meta, area)
 
     # Easy-to-read Excel workbook (see spreadsheet.py)
     try:
