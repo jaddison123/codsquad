@@ -26,6 +26,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.staticfiles import StaticFiles
 
+import spreadsheet
 import vessels
 from options import FLAGS, GEAR_TYPES, REGIONS
 
@@ -287,22 +288,51 @@ def bbox_to_geojson(bbox):
     return {"type": "Polygon", "coordinates": [[[w, s], [e, s], [e, n], [w, n], [w, s]]]}
 
 
+# A drawn box at most this big (in square degrees) gets the same download limits
+# as a preset region. It's about the size of the biggest preset (Mediterranean).
+MAX_REGION_AREA = 1000
+
+
+def pick_area(region: str | None, bbox: str | None) -> tuple[list[float], bool]:
+    """
+    Work out which area the user chose: a preset region, a box they drew on the
+    map ("west,south,east,north"), or the whole world.
+    Returns (bbox, is_small): is_small is True when the area is region-sized.
+    """
+    if region and bbox:
+        raise HTTPException(status_code=400, detail="Choose a region or a drawn box, not both.")
+    if bbox:
+        try:
+            west, south, east, north = (float(v) for v in bbox.split(","))
+        except ValueError:
+            raise HTTPException(status_code=400, detail="bbox must be four numbers: west,south,east,north.")
+        # Written this way round so "nan" fails too (any comparison with nan is False)
+        if not (-180 <= west < east <= 180 and -85 <= south < north <= 85):
+            raise HTTPException(status_code=400, detail="The drawn box is off the map or has no size.")
+        area = (east - west) * (north - south)
+        return [west, south, east, north], area <= MAX_REGION_AREA
+    if region:
+        if region not in REGIONS:
+            raise HTTPException(status_code=400, detail=f"Unknown region: {region}")
+        return REGIONS[region]["bbox"], True
+    return WORLD_BBOX, False
+
+
 @app.get("/api/stats")
 async def stats(
     start: date,
     end: date,
     group_by: str = "FLAG",
     region: str | None = None,
+    bbox: str | None = None,
     flag: str | None = None,
     gear: str | None = None,
 ):
-    """Total fishing hours per flag (or gear type) in the region, biggest first."""
+    """Total fishing hours per flag (or gear type) in the area, biggest first."""
     if group_by not in ("FLAG", "GEARTYPE"):
         raise HTTPException(status_code=400, detail="group_by must be FLAG or GEARTYPE.")
-    if region and region not in REGIONS:
-        raise HTTPException(status_code=400, detail=f"Unknown region: {region}")
+    area, _ = pick_area(region, bbox)
     filter_text = build_filter(start, end, flag, gear)
-    bbox = REGIONS[region]["bbox"] if region else WORLD_BBOX
 
     try:
         result = await gfw_client.fourwings.create_fishing_effort_report(
@@ -312,7 +342,7 @@ async def stats(
             group_by=group_by,
             start_date=start.isoformat(),
             end_date=end.isoformat(),
-            geojson=bbox_to_geojson(bbox),
+            geojson=bbox_to_geojson(area),
             filters=[filter_text] if filter_text else None,
         )
     except Exception as err:
@@ -386,9 +416,11 @@ async def download_fishing_data(
     start: date,
     end: date,
     region: str | None = None,
+    bbox: str | None = None,
     flag: str | None = None,
     gear: str | None = None,
     resolution: str = "DAILY",
+    format: str = "xlsx",
 ):
     """
     Download fishing-effort records for the selected date range, one row per
@@ -397,23 +429,24 @@ async def download_fishing_data(
     """
     if resolution not in DOWNLOAD_LIMITS:
         raise HTTPException(status_code=400, detail="resolution must be DAILY or HOURLY.")
+    if format not in ("xlsx", "csv"):
+        raise HTTPException(status_code=400, detail="format must be xlsx or csv.")
     if end <= start:
         raise HTTPException(status_code=400, detail="End date must be after start date.")
-    if region and region not in REGIONS:
-        raise HTTPException(status_code=400, detail=f"Unknown region: {region}")
+    area, is_small = pick_area(region, bbox)
     region_days, world_days = DOWNLOAD_LIMITS[resolution]
-    max_days = region_days if region else world_days
+    max_days = region_days if is_small else world_days
     if end - start > timedelta(days=max_days):
         level = resolution.lower()
-        if region:
+        if is_small:
             detail = f"{level.capitalize()} downloads are limited to {max_days} days."
         else:
-            detail = (f"Whole-world {level} downloads are limited to {max_days} days. "
-                      f"Pick a region for up to {region_days} days.")
+            where = "Large-area" if bbox else "Whole-world"
+            detail = (f"{where} {level} downloads are limited to {max_days} days. "
+                      f"Pick a region or draw a smaller box for up to {region_days} days.")
         raise HTTPException(status_code=400, detail=detail)
 
     filter_text = build_filter(start, end, flag, gear)
-    bbox = REGIONS[region]["bbox"] if region else WORLD_BBOX
     report_params = {
         "format": "CSV",
         "datasets[0]": FISHING_DATASET,
@@ -430,7 +463,7 @@ async def download_fishing_data(
         report = await gfw_http.post(
             f"{GFW_4WINGS}/report",
             params=report_params,
-            json={"geojson": bbox_to_geojson(bbox)},
+            json={"geojson": bbox_to_geojson(area)},
             headers={"Accept": "application/zip, text/csv, application/json"},
             timeout=100,
         )
@@ -460,11 +493,41 @@ async def download_fishing_data(
         raise HTTPException(status_code=502, detail="GFW did not return a readable CSV report.")
 
     csv_content = sort_csv_by_time(csv_content)
-    filename = f"fishing_activity_{resolution.lower()}_{start.isoformat()}_to_{end.isoformat()}.csv"
+    filename = f"fishing_activity_{resolution.lower()}_{start.isoformat()}_to_{end.isoformat()}"
+
+    if format == "csv":
+        return Response(
+            content=csv_content,
+            media_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{filename}.csv"'},
+        )
+
+    # Easy-to-read Excel workbook (see spreadsheet.py)
+    if region:
+        area_name = REGIONS[region]["name"]
+    elif bbox:
+        w, s, e, n = area
+        area_name = f"Drawn area ({s:g}° to {n:g}° latitude, {w:g}° to {e:g}° longitude)"
+    else:
+        area_name = "Whole world"
+    meta = {
+        "area": area_name,
+        "start": start,
+        "last_day": end - timedelta(days=1),  # GFW's end date is not included
+        "flag": FLAGS[flag] if flag else "All countries",
+        "gear": GEAR_TYPES[gear] if gear else "All methods",
+        "hourly": resolution == "HOURLY",
+    }
+    try:
+        # Building a big workbook takes a few seconds; run it off the main thread
+        # so the map tiles keep loading for everyone else meanwhile.
+        xlsx = await asyncio.to_thread(spreadsheet.build_workbook, csv_content, meta)
+    except ValueError as err:
+        raise HTTPException(status_code=400, detail=f"{err} Choose a smaller area or a shorter date range.")
     return Response(
-        content=csv_content,
-        media_type="text/csv; charset=utf-8",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        content=xlsx,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}.xlsx"'},
     )
 
 

@@ -27,7 +27,7 @@ async function loadStats() {
   if (!f.start || !f.end || f.end <= f.start) return;
 
   const params = new URLSearchParams({ start: f.start, end: f.end, group_by: groupBy });
-  if (f.region) params.set("region", f.region);
+  addAreaParams(params); // from app.js: preset region or drawn box
   if (f.flag) params.set("flag", f.flag);
   if (f.gear) params.set("gear", f.gear);
 

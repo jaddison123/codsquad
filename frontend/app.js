@@ -56,8 +56,17 @@ function currentFilters() {
     flag: flagSelect.value,
     gear: gearSelect.value,
     region: selectedRegion,
-    regionName: selectedRegion ? regions[selectedRegion].name : "Whole world",
+    bbox: customBbox,
+    regionName: selectedRegion ? regions[selectedRegion].name
+      : customBbox ? "Drawn area" : "Whole world",
   };
+}
+
+// Add the chosen area to a request: a preset region, a drawn box, or nothing
+// (= whole world). Used by the stats chart and the download.
+function addAreaParams(params) {
+  if (selectedRegion) params.set("region", selectedRegion);
+  else if (customBbox) params.set("bbox", customBbox.join(","));
 }
 
 // Tell any listener (the stats chart) that the filters changed.
@@ -109,36 +118,133 @@ async function loadOptions() {
 
 // ---- 5. Regions: zoom to a box and outline it ----------------------------
 let regionOutline = null;
-let selectedRegion = ""; // "" means the whole world (used by the stats chart later)
+let selectedRegion = ""; // preset region id; "" means none
+let customBbox = null;   // [west, south, east, north] of a box drawn on the map, or null
+const drawButton = document.getElementById("draw-area");
 
-function selectRegion(id) {
-  selectedRegion = id;
-  announceFiltersChanged();
+const OUTLINE_STYLE = { color: "#ffffff", weight: 1.5, dashArray: "6 6", fill: false, interactive: false };
 
-  // Highlight the chosen button
+function showOutline(bounds) {
+  if (regionOutline) map.removeLayer(regionOutline);
+  regionOutline = bounds ? L.rectangle(bounds, OUTLINE_STYLE).addTo(map) : null;
+}
+
+// Highlight the chosen button ("" = whole world, null = none, e.g. a drawn box)
+function highlightChip(id) {
   regionButtons.querySelectorAll(".chip").forEach((chip) => {
     chip.classList.toggle("active", chip.dataset.region === id);
   });
+  drawButton.classList.toggle("active", Boolean(customBbox));
+}
 
-  if (regionOutline) map.removeLayer(regionOutline);
-  regionOutline = null;
+function selectRegion(id) {
+  selectedRegion = id;
+  customBbox = null;
+  highlightChip(id);
+  announceFiltersChanged();
 
   if (!id) {
+    showOutline(null);
     map.flyTo([30, 0], 3);
     return;
   }
   // bbox is [west, south, east, north]; Leaflet wants [[south, west], [north, east]]
   const [west, south, east, north] = regions[id].bbox;
   const bounds = [[south, west], [north, east]];
-  regionOutline = L.rectangle(bounds, {
-    color: "#ffffff",
-    weight: 1.5,
-    dashArray: "6 6",
-    fill: false,
-    interactive: false,
-  }).addTo(map);
+  showOutline(bounds);
   map.flyToBounds(bounds, { padding: [30, 30] });
 }
+
+// ---- 5b. Draw your own area by dragging a box on the map ------------------
+// Click "Draw an area", then press and drag on the map. Normal map dragging is
+// switched off while drawing so the drag draws a box instead of moving the map.
+const mapEl = map.getContainer();
+let drawing = false;   // waiting for the user to drag
+let dragStart = null;  // { latlng, x, y } where the drag began
+let dragBox = null;    // the rectangle that follows the pointer
+
+function setDrawMode(on) {
+  drawing = on;
+  dragStart = null;
+  if (dragBox) map.removeLayer(dragBox);
+  dragBox = null;
+  drawButton.classList.toggle("waiting", on);
+  mapEl.classList.toggle("drawing", on);
+  if (on) {
+    map.dragging.disable();
+    setStatus("Press and drag on the map to draw an area. Press Esc to cancel.");
+  } else {
+    map.dragging.enable();
+  }
+}
+
+// The map repeats sideways, so a drawn longitude can be e.g. 400°. Shift the box
+// back into -180..180 and keep it off the poles (GFW has no data there).
+function boundsToBbox(bounds) {
+  const shift = Math.floor((bounds.getWest() + 180) / 360) * 360;
+  const round = (v) => Math.round(v * 1000) / 1000;
+  return {
+    bbox: [
+      round(bounds.getWest() - shift),
+      round(Math.max(bounds.getSouth(), -85)),
+      round(Math.min(bounds.getEast() - shift, 180)), // a box over the 180° line is cut there
+      round(Math.min(bounds.getNorth(), 85)),
+    ],
+    shift,
+  };
+}
+
+function selectCustomArea(bounds) {
+  const { bbox, shift } = boundsToBbox(bounds);
+  selectedRegion = "";
+  customBbox = bbox;
+  highlightChip(null);
+  // Draw the outline where the user drew it (on the same copy of the world)
+  const [west, south, east, north] = bbox;
+  showOutline([[south, west + shift], [north, east + shift]]);
+  setStatus("Stats and downloads now use your drawn area.");
+  announceFiltersChanged();
+}
+
+drawButton.addEventListener("click", () => setDrawMode(!drawing));
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && drawing) {
+    setDrawMode(false);
+    setStatus("Drawing cancelled.");
+  }
+});
+
+// Pointer events cover mouse, pen and touch in one go
+mapEl.addEventListener("pointerdown", (event) => {
+  if (!drawing || event.button !== 0 || event.target.closest(".leaflet-control")) return;
+  event.preventDefault();
+  mapEl.setPointerCapture(event.pointerId); // keep getting moves even outside the map
+  const latlng = map.mouseEventToLatLng(event);
+  dragStart = { latlng, x: event.clientX, y: event.clientY };
+  dragBox = L.rectangle([latlng, latlng], { ...OUTLINE_STYLE, dashArray: null, fill: true, fillOpacity: 0.08 }).addTo(map);
+});
+
+mapEl.addEventListener("pointermove", (event) => {
+  if (!dragStart) return;
+  dragBox.setBounds(L.latLngBounds(dragStart.latlng, map.mouseEventToLatLng(event)));
+});
+
+mapEl.addEventListener("pointerup", (event) => {
+  if (!dragStart) return;
+  const tooSmall = Math.abs(event.clientX - dragStart.x) < 10 || Math.abs(event.clientY - dragStart.y) < 10;
+  const bounds = L.latLngBounds(dragStart.latlng, map.mouseEventToLatLng(event));
+  setDrawMode(false);
+  if (tooSmall) {
+    setStatus("That box was too small. Click \"Draw an area\" to try again.", true);
+    return;
+  }
+  selectCustomArea(bounds);
+});
+
+// e.g. a phone call or a second finger interrupts the drag
+mapEl.addEventListener("pointercancel", () => {
+  if (dragStart) setDrawMode(false);
+});
 
 // One click handler for all region buttons ("event delegation")
 regionButtons.addEventListener("click", (event) => {
@@ -212,10 +318,11 @@ document.getElementById("map-form").addEventListener("submit", (event) => {
 flagSelect.addEventListener("change", loadHeatmap);
 gearSelect.addEventListener("change", loadHeatmap);
 
-// ---- 7. CSV download: export the data for the filters currently selected ----
+// ---- 7. Download: the data for the current filters, as Excel or raw CSV ----
 // The button itself is in index.html, right under "Update map".
 const downloadButton = document.getElementById("download-csv-button");
 const resolutionSelect = document.getElementById("download-resolution"); // Daily or Hourly rows
+const formatSelect = document.getElementById("download-format"); // Excel or CSV
 
 downloadButton.addEventListener("click", async () => {
   const start = startInput.value;
@@ -226,13 +333,14 @@ downloadButton.addEventListener("click", async () => {
   }
 
   const resolution = resolutionSelect.value;
-  const params = new URLSearchParams({ start, end, resolution });
+  const format = formatSelect.value; // "xlsx" (easy-to-read Excel) or "csv" (raw)
+  const params = new URLSearchParams({ start, end, resolution, format });
   if (flagSelect.value) params.set("flag", flagSelect.value);
   if (gearSelect.value) params.set("gear", gearSelect.value);
-  if (selectedRegion) params.set("region", selectedRegion);
+  addAreaParams(params);
 
   downloadButton.disabled = true;
-  setStatus("Preparing your CSV download…");
+  setStatus(format === "xlsx" ? "Preparing your spreadsheet…" : "Preparing your CSV download…");
   try {
     const response = await fetch(`/api/download?${params.toString()}`);
     if (!response.ok) {
@@ -249,14 +357,14 @@ downloadButton.addEventListener("click", async () => {
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = `fishing_activity_${resolution.toLowerCase()}_${start}_to_${end}.csv`;
+    link.download = `fishing_activity_${resolution.toLowerCase()}_${start}_to_${end}.${format}`;
     document.body.appendChild(link);
     link.click();
     link.remove();
     URL.revokeObjectURL(url);
-    setStatus("CSV downloaded successfully.");
+    setStatus("Download finished.");
   } catch (error) {
-    setStatus(`Could not download CSV: ${error.message}`, true);
+    setStatus(`Could not download: ${error.message}`, true);
   } finally {
     downloadButton.disabled = false;
   }

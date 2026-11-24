@@ -187,10 +187,11 @@ h2 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.06em; color
 .field + .field { margin-top: 10px; }
 button.primary { width: 100%; margin-bottom: 14px; padding: 9px; }
 /* Download sits right under "Update map", outlined so it reads as secondary */
-.download-row { display: flex; gap: 8px; margin: -6px 0 14px; }
-.download-row select { flex: 0 0 auto; width: auto; }
+/* Two dropdowns side by side, the button full width underneath */
+.download-row { display: flex; flex-wrap: wrap; gap: 8px; margin: -6px 0 14px; }
+.download-row select { flex: 1 1 0; min-width: 0; width: auto; }
 button.download {
-  flex: 1;
+  flex: 1 0 100%;
   padding: 9px;
   background: transparent;
   color: var(--accent);
@@ -210,6 +211,13 @@ button.chip {
   border-radius: 999px;
 }
 button.chip.active { background: var(--accent); color: #032a24; border-color: var(--accent); }
+
+/* "Draw an area" button: dashed while waiting for the user to drag on the map */
+button.draw-chip { margin-top: 8px; }
+button.draw-chip.waiting { border-style: dashed; border-color: var(--accent); color: var(--accent); }
+
+/* While drawing, the map shows a crosshair and touch drags draw instead of scrolling */
+#map.drawing, #map.drawing .leaflet-interactive { cursor: crosshair; touch-action: none; }
 
 input, select, button {
   font: inherit;

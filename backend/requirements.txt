@@ -10,3 +10,6 @@ python-dotenv
 
 # Used to forward map tiles from GFW to the browser
 httpx
+
+# Builds the easy-to-read Excel download
+openpyxl

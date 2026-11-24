@@ -46,7 +46,11 @@
           <option value="DAILY">Daily</option>
           <option value="HOURLY">Hourly</option>
         </select>
-        <button type="button" id="download-csv-button" class="download">Download CSV</button>
+        <select id="download-format" aria-label="File type">
+          <option value="xlsx">Excel (easy to read)</option>
+          <option value="csv">CSV (raw data)</option>
+        </select>
+        <button type="button" id="download-csv-button" class="download">Download</button>
       </div>
     </form>
 
@@ -56,6 +60,7 @@
       <div id="region-buttons" class="chip-grid">
         <button type="button" class="chip active" data-region="">Whole world</button>
       </div>
+      <button type="button" id="draw-area" class="chip draw-chip">&#9633; Draw an area</button>
     </section>
 
     <section class="panel">
