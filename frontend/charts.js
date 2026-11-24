@@ -67,6 +67,13 @@ function loadChartLibs() {
   return libsPromise;
 }
 
+// Start downloading the chart library and coastlines early (app.js calls this
+// as soon as "Charts" is picked), so the view opens faster when clicked.
+// Errors are ignored here; opening the view simply tries again.
+function preloadCharts() {
+  loadChartLibs().then(loadLand).catch(() => {});
+}
+
 let landPromise = null;
 function loadLand() {
   if (!landPromise) {

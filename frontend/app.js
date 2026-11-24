@@ -328,7 +328,10 @@ const formatSelect = document.getElementById("download-format"); // Excel, CSV o
 function updateDownloadLabel() {
   downloadButton.textContent = formatSelect.value === "chart" ? "Show chart" : "Download";
 }
-formatSelect.addEventListener("change", updateDownloadLabel);
+formatSelect.addEventListener("change", () => {
+  updateDownloadLabel();
+  if (formatSelect.value === "chart") preloadCharts(); // charts.js: fetch the library early
+});
 updateDownloadLabel();
 
 downloadButton.addEventListener("click", async () => {

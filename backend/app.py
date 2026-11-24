@@ -25,8 +25,10 @@ import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.gzip import GZipMiddleware
 
 import chartdata
+from cache import TTLCache
 import spreadsheet
 import vessels
 from options import FLAGS, GEAR_TYPES, REGIONS
@@ -58,6 +60,15 @@ FISHING_DATASET = "public-global-fishing-effort:latest"
 report_lock = asyncio.Lock()
 REPORT_RETRY_SECONDS = 3
 REPORT_MAX_WAIT = 90  # seconds to keep retrying while GFW is busy
+
+# Remember GFW's answers for a while (see cache.py), so repeat views are
+# near-instant and e.g. "Charts" then "Excel" for the same choices only asks
+# GFW once. Six hours is short enough to pick up GFW's late-arriving data.
+CACHE_SECONDS = 6 * 60 * 60
+heatmap_cache = TTLCache(max_items=500, ttl=CACHE_SECONDS)
+tile_cache = TTLCache(max_items=10_000, ttl=CACHE_SECONDS)    # tiles are ~2-3 KB each
+stats_cache = TTLCache(max_items=500, ttl=CACHE_SECONDS)
+report_cache = TTLCache(max_items=30, ttl=CACHE_SECONDS, max_bytes=200 * 1024 * 1024)  # CSVs can be big
 
 
 def gfw_busy(result) -> bool:
@@ -156,6 +167,10 @@ async def heatmap(start: date, end: date, flag: str | None = None, gear: str | N
     optionally filtered to one flag state and/or one gear type.
     """
     filter_text = build_filter(start, end, flag, gear)
+    cache_key = (start, end, filter_text)
+    cached = heatmap_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     params = {
         "interval": "DAY",
@@ -168,6 +183,7 @@ async def heatmap(start: date, end: date, flag: str | None = None, gear: str | N
 
     r = await gfw_http.post(f"{GFW_4WINGS}/generate-png", params=params)
     if r.status_code == 204:  # GFW's way of saying "no data matches"
+        heatmap_cache.set(cache_key, {"tileUrl": None})
         return {"tileUrl": None}
     if r.is_error:
         raise HTTPException(status_code=502, detail=f"GFW style request failed: {r.text}")
@@ -175,7 +191,9 @@ async def heatmap(start: date, end: date, flag: str | None = None, gear: str | N
     # GFW's URL looks like https://.../tile/heatmap/{z}/{x}/{y}?style=...&date-range=...
     # We keep only the part after "?" and point the map at our own /api/tiles route.
     query_string = r.json()["url"].split("?", 1)[1]
-    return {"tileUrl": f"/api/tiles/{{z}}/{{x}}/{{y}}?{query_string}"}
+    result = {"tileUrl": f"/api/tiles/{{z}}/{{x}}/{{y}}?{query_string}"}
+    heatmap_cache.set(cache_key, result)
+    return result
 
 
 def make_transparent_png() -> bytes:
@@ -196,6 +214,12 @@ TRANSPARENT_PNG = make_transparent_png()
 @app.get("/api/tiles/{z}/{x}/{y}")
 async def tile(z: int, x: int, y: int, request: Request):
     """Forward map tile requests to Global Fishing Watch."""
+    cache_key = f"{request.url.path}?{request.url.query}"
+    cached = tile_cache.get(cache_key)
+    if cached is not None:
+        content, media_type, max_age = cached
+        return Response(content=content, media_type=media_type,
+                        headers={"Cache-Control": f"public, max-age={max_age}"})
 
     try:
         r = await gfw_http.get(
@@ -206,6 +230,7 @@ async def tile(z: int, x: int, y: int, request: Request):
         # A missing or empty tile means an area with no fishing data.
         # Return a transparent PNG instead of displaying a broken tile.
         if r.status_code in (204, 404) or (r.status_code == 200 and not r.content):
+            tile_cache.set(cache_key, (TRANSPARENT_PNG, "image/png", 300), size=len(TRANSPARENT_PNG))
             return Response(
                 content=TRANSPARENT_PNG,
                 media_type="image/png",
@@ -218,10 +243,12 @@ async def tile(z: int, x: int, y: int, request: Request):
                 detail=f"Global Fishing Watch tile request failed: {r.status_code}"
             )
 
+        media_type = r.headers.get("content-type", "image/png")
+        tile_cache.set(cache_key, (r.content, media_type, 3600), size=len(r.content))
         return Response(
             content=r.content,
             status_code=200,
-            media_type=r.headers.get("content-type", "image/png"),
+            media_type=media_type,
             headers={"Cache-Control": "public, max-age=3600"},
         )
 
@@ -368,6 +395,10 @@ async def stats(
         raise HTTPException(status_code=400, detail="group_by must be FLAG or GEARTYPE.")
     area, _ = pick_area(region, bbox)
     filter_text = build_filter(start, end, flag, gear)
+    cache_key = (start, end, group_by, tuple(area), filter_text)
+    cached = stats_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     try:
         result = await queued_report(lambda: gfw_client.fourwings.create_fishing_effort_report(
@@ -401,7 +432,9 @@ async def stats(
         top.append({"code": None, "label": f"Other ({len(rest)})",
                     "hours": sum(r["hours"] for r in rest),
                     "vessels": sum(r["vessels"] for r in rest)})
-    return {"rows": top, "totalHours": sum(r["hours"] for r in rows)}
+    answer = {"rows": top, "totalHours": sum(r["hours"] for r in rows)}
+    stats_cache.set(cache_key, answer)
+    return answer
 
 
 # ---------------------------------------------------------------------------
@@ -497,40 +530,46 @@ async def download_fishing_data(
     if filter_text:
         report_params["filters[0]"] = filter_text
 
-    try:
-        report = await queued_report(lambda: gfw_http.post(
-            f"{GFW_4WINGS}/report",
-            params=report_params,
-            json={"geojson": bbox_to_geojson(area)},
-            headers={"Accept": "application/zip, text/csv, application/json"},
-            timeout=100,
-        ))
-    except httpx.RequestError as err:
-        raise HTTPException(status_code=502, detail=f"Could not contact Global Fishing Watch: {err}")
-
-    if report.is_error:
-        detail = report.text[:1000]
-        raise HTTPException(
-            status_code=502,
-            detail=f"Global Fishing Watch report failed ({report.status_code}): {detail}",
-        )
-
-    content = report.content
-    csv_content = content
-    if zipfile.is_zipfile(io.BytesIO(content)):
+    # The same GFW data feeds all three formats, so it's cached before the
+    # Excel/CSV/chart step: switching format for the same choices skips GFW.
+    cache_key = (start, end, tuple(area), filter_text, resolution)
+    csv_content = report_cache.get(cache_key)
+    if csv_content is None:
         try:
-            with zipfile.ZipFile(io.BytesIO(content)) as archive:
-                csv_files = [name for name in archive.namelist() if name.lower().endswith(".csv")]
-                if not csv_files:
-                    raise HTTPException(status_code=502, detail="GFW returned a ZIP file without a CSV.")
-                csv_content = archive.read(csv_files[0])
-        except zipfile.BadZipFile:
-            raise HTTPException(status_code=502, detail="GFW returned an invalid ZIP file.")
+            report = await queued_report(lambda: gfw_http.post(
+                f"{GFW_4WINGS}/report",
+                params=report_params,
+                json={"geojson": bbox_to_geojson(area)},
+                headers={"Accept": "application/zip, text/csv, application/json"},
+                timeout=100,
+            ))
+        except httpx.RequestError as err:
+            raise HTTPException(status_code=502, detail=f"Could not contact Global Fishing Watch: {err}")
 
-    if not csv_content or b"," not in csv_content[:4096]:
-        raise HTTPException(status_code=502, detail="GFW did not return a readable CSV report.")
+        if report.is_error:
+            detail = report.text[:1000]
+            raise HTTPException(
+                status_code=502,
+                detail=f"Global Fishing Watch report failed ({report.status_code}): {detail}",
+            )
 
-    csv_content = sort_csv_by_time(csv_content)
+        content = report.content
+        csv_content = content
+        if zipfile.is_zipfile(io.BytesIO(content)):
+            try:
+                with zipfile.ZipFile(io.BytesIO(content)) as archive:
+                    csv_files = [name for name in archive.namelist() if name.lower().endswith(".csv")]
+                    if not csv_files:
+                        raise HTTPException(status_code=502, detail="GFW returned a ZIP file without a CSV.")
+                    csv_content = archive.read(csv_files[0])
+            except zipfile.BadZipFile:
+                raise HTTPException(status_code=502, detail="GFW returned an invalid ZIP file.")
+
+        if not csv_content or b"," not in csv_content[:4096]:
+            raise HTTPException(status_code=502, detail="GFW did not return a readable CSV report.")
+
+        csv_content = sort_csv_by_time(csv_content)
+        report_cache.set(cache_key, csv_content, size=len(csv_content))
     filename = f"fishing_activity_{resolution.lower()}_{start.isoformat()}_to_{end.isoformat()}"
 
     if format == "csv":
@@ -591,6 +630,36 @@ async def revalidate_site_files(request: Request, call_next):
         response.headers["Cache-Control"] = "no-cache"
     return response
 
+
+class CompressText:
+    """
+    Gzip text-like responses (pages, scripts, JSON, CSV), which shrinks them
+    4-10x. Map tiles and Excel files are already compressed, so those are
+    passed through untouched instead of wasting time squeezing them again.
+    """
+
+    def __init__(self, app):
+        self.app = app
+        self.gzip = GZipMiddleware(app, minimum_size=1000, compresslevel=5)
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and self._worth_compressing(scope):
+            await self.gzip(scope, receive, send)
+        else:
+            await self.app(scope, receive, send)
+
+    @staticmethod
+    def _worth_compressing(scope) -> bool:
+        path = scope["path"]
+        if path.startswith("/api/tiles/"):
+            return False  # PNG images
+        if path == "/api/download":
+            query = scope.get("query_string", b"")
+            return b"format=csv" in query or b"format=chart" in query  # not Excel (the default)
+        return True
+
+
+app.add_middleware(CompressText)
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")
