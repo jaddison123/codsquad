@@ -47,8 +47,9 @@
           <option value="HOURLY">Hourly</option>
         </select>
         <select id="download-format" aria-label="File type">
-          <option value="xlsx">Excel (easy to read)</option>
-          <option value="csv">CSV (raw data)</option>
+          <option value="xlsx">Excel</option>
+          <option value="chart">Charts</option>
+          <option value="csv">CSV (raw)</option>
         </select>
         <button type="button" id="download-csv-button" class="download">Download</button>
       </div>
@@ -121,6 +122,49 @@
   <script src="app.js"></script>
   <script src="vessels.js"></script>
   <script src="stats.js"></script>
+  <!-- Full-screen chart view, filled in by charts.js ("Charts" option) -->
+  <section id="chart-view" class="chart-view" hidden aria-label="Fishing activity charts">
+    <header class="cv-head">
+      <div>
+        <h2>Fishing activity</h2>
+        <p id="cv-subtitle" class="cv-sub"></p>
+      </div>
+      <button type="button" id="cv-close" class="cv-close" aria-label="Close charts">&times;</button>
+    </header>
+    <p id="cv-message" class="cv-message"></p>
+    <div id="cv-content" hidden>
+      <div id="cv-tiles" class="cv-tiles"></div>
+
+      <article class="cv-card">
+        <div class="cv-card-head">
+          <div class="toggle" role="group" aria-label="Main chart">
+            <button type="button" class="active" data-view="map">Hotspot map</button>
+            <button type="button" data-view="countries">Countries by day</button>
+          </div>
+          <p id="cv-hint" class="cv-hint"></p>
+        </div>
+        <p id="cv-caption" class="cv-caption"></p>
+        <div id="cv-map" class="cv-main"></div>
+        <div id="cv-heat" class="cv-main" hidden></div>
+      </article>
+
+      <div class="cv-grid">
+        <article class="cv-card">
+          <h3>Fishing per day</h3>
+          <div id="cv-daily" class="cv-2d"></div>
+        </article>
+        <article class="cv-card">
+          <h3>Which countries' boats</h3>
+          <div id="cv-countries" class="cv-2d"></div>
+        </article>
+        <article class="cv-card">
+          <h3>Fishing methods</h3>
+          <div id="cv-gear" class="cv-2d"></div>
+        </article>
+      </div>
+    </div>
+  </section>
+  <script src="charts.js"></script>
 
   <!-- Floating tooltip shared by the chart -->
   <div id="tooltip" class="tooltip" hidden></div>

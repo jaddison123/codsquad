@@ -322,7 +322,14 @@ gearSelect.addEventListener("change", loadHeatmap);
 // The button itself is in index.html, right under "Update map".
 const downloadButton = document.getElementById("download-csv-button");
 const resolutionSelect = document.getElementById("download-resolution"); // Daily or Hourly rows
-const formatSelect = document.getElementById("download-format"); // Excel or CSV
+const formatSelect = document.getElementById("download-format"); // Excel, CSV or chart
+
+// The chart option shows the data in the site instead of saving a file
+function updateDownloadLabel() {
+  downloadButton.textContent = formatSelect.value === "chart" ? "Show chart" : "Download";
+}
+formatSelect.addEventListener("change", updateDownloadLabel);
+updateDownloadLabel();
 
 downloadButton.addEventListener("click", async () => {
   const start = startInput.value;
@@ -333,11 +340,16 @@ downloadButton.addEventListener("click", async () => {
   }
 
   const resolution = resolutionSelect.value;
-  const format = formatSelect.value; // "xlsx" (easy-to-read Excel) or "csv" (raw)
+  const format = formatSelect.value; // "xlsx" (easy-to-read Excel), "csv" (raw) or "chart"
   const params = new URLSearchParams({ start, end, resolution, format });
   if (flagSelect.value) params.set("flag", flagSelect.value);
   if (gearSelect.value) params.set("gear", gearSelect.value);
   addAreaParams(params);
+
+  if (format === "chart") {
+    openChartView(params); // charts.js: opens over the page, nothing is saved
+    return;
+  }
 
   downloadButton.disabled = true;
   setStatus(format === "xlsx" ? "Preparing your spreadsheet…" : "Preparing your CSV download…");

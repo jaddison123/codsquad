@@ -26,6 +26,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.staticfiles import StaticFiles
 
+import chartdata
 import spreadsheet
 import vessels
 from options import FLAGS, GEAR_TYPES, REGIONS
@@ -50,6 +51,40 @@ gfw_http = httpx.AsyncClient(
 )
 
 FISHING_DATASET = "public-global-fishing-effort:latest"
+
+# GFW lets a token run only ONE report at a time (it answers "429 Too Many
+# Requests" otherwise). The stats chart and the downloads both use reports, so
+# they queue up here and take turns instead of failing.
+report_lock = asyncio.Lock()
+REPORT_RETRY_SECONDS = 3
+REPORT_MAX_WAIT = 90  # seconds to keep retrying while GFW is busy
+
+
+def gfw_busy(result) -> bool:
+    """True if GFW said "429 Too Many Requests" (a report is still running)."""
+    if isinstance(result, httpx.Response):
+        return result.status_code == 429
+    return "429" in str(result)  # the GFW Python package raises an error instead
+
+
+async def queued_report(make_request):
+    """
+    Run one GFW report at a time. If GFW still says it's busy (e.g. a report
+    from a closed browser tab is still finishing on its side), wait and retry.
+    `make_request` is a function that starts the request, so it can be retried.
+    """
+    async with report_lock:
+        waited = 0
+        while True:
+            try:
+                result = await make_request()
+                if not gfw_busy(result) or waited >= REPORT_MAX_WAIT:
+                    return result
+            except Exception as err:
+                if not gfw_busy(err) or waited >= REPORT_MAX_WAIT:
+                    raise
+            await asyncio.sleep(REPORT_RETRY_SECONDS)
+            waited += REPORT_RETRY_SECONDS
 HEATMAP_COLOR = "#00e6c3"  # teal glow, similar to GFW's own fishing layer
 
 app = FastAPI(title="Fishing Activity Map API")
@@ -335,7 +370,7 @@ async def stats(
     filter_text = build_filter(start, end, flag, gear)
 
     try:
-        result = await gfw_client.fourwings.create_fishing_effort_report(
+        result = await queued_report(lambda: gfw_client.fourwings.create_fishing_effort_report(
             spatial_resolution="LOW",
             temporal_resolution="ENTIRE",   # one total for the whole date range...
             spatial_aggregation=True,       # ...and for the whole area (no grid cells)
@@ -344,7 +379,7 @@ async def stats(
             end_date=end.isoformat(),
             geojson=bbox_to_geojson(area),
             filters=[filter_text] if filter_text else None,
-        )
+        ))
     except Exception as err:
         raise HTTPException(status_code=502, detail=f"GFW report failed: {err}")
 
@@ -426,11 +461,14 @@ async def download_fishing_data(
     Download fishing-effort records for the selected date range, one row per
     grid cell per day (resolution=DAILY) or per hour (resolution=HOURLY).
     These are grid-cell totals, not individual AIS positions.
+
+    format: "xlsx" (easy-to-read Excel), "csv" (raw), or "chart" (JSON totals
+    for the chart view in the site, so nothing is downloaded to disk).
     """
     if resolution not in DOWNLOAD_LIMITS:
         raise HTTPException(status_code=400, detail="resolution must be DAILY or HOURLY.")
-    if format not in ("xlsx", "csv"):
-        raise HTTPException(status_code=400, detail="format must be xlsx or csv.")
+    if format not in ("xlsx", "csv", "chart"):
+        raise HTTPException(status_code=400, detail="format must be xlsx, csv or chart.")
     if end <= start:
         raise HTTPException(status_code=400, detail="End date must be after start date.")
     area, is_small = pick_area(region, bbox)
@@ -460,13 +498,13 @@ async def download_fishing_data(
         report_params["filters[0]"] = filter_text
 
     try:
-        report = await gfw_http.post(
+        report = await queued_report(lambda: gfw_http.post(
             f"{GFW_4WINGS}/report",
             params=report_params,
             json={"geojson": bbox_to_geojson(area)},
             headers={"Accept": "application/zip, text/csv, application/json"},
             timeout=100,
-        )
+        ))
     except httpx.RequestError as err:
         raise HTTPException(status_code=502, detail=f"Could not contact Global Fishing Watch: {err}")
 
@@ -502,7 +540,7 @@ async def download_fishing_data(
             headers={"Content-Disposition": f'attachment; filename="{filename}.csv"'},
         )
 
-    # Easy-to-read Excel workbook (see spreadsheet.py)
+    # Excel workbook and chart view both describe the choices in words
     if region:
         area_name = REGIONS[region]["name"]
     elif bbox:
@@ -518,6 +556,12 @@ async def download_fishing_data(
         "gear": GEAR_TYPES[gear] if gear else "All methods",
         "hourly": resolution == "HOURLY",
     }
+
+    if format == "chart":
+        # Totals for the in-site chart view (see chartdata.py); FastAPI sends it as JSON
+        return await asyncio.to_thread(chartdata.build_chart_data, csv_content, meta, area)
+
+    # Easy-to-read Excel workbook (see spreadsheet.py)
     try:
         # Building a big workbook takes a few seconds; run it off the main thread
         # so the map tiles keep loading for everyone else meanwhile.
